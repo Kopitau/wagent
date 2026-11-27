@@ -10,10 +10,14 @@ const hostArch = process.arch;
 const hostPlatform = process.platform;
 
 const { values } = NodeUtil.parseArgs({
-  options: { output: { type: "string" }, arch: { type: "string", default: hostArch } },
+  options: {
+    output: { type: "string" },
+    arch: { type: "string", default: hostArch },
+    optional: { type: "boolean", default: false },
+  },
 });
-// Packaging passes --output and must not ship without the helper; dev builds only lose the option.
-const required = values.output !== undefined;
+// Official signed packaging must not ship without the helper; unsigned local builds may run on SDK < 26.
+const required = values.output !== undefined && !values.optional;
 
 if (hostPlatform !== "darwin") {
   if (required) throw new Error("The Apple Speech helper can only be built on macOS.");
@@ -66,6 +70,9 @@ if (hostPlatform !== "darwin") {
     } catch (cause) {
       if (required)
         throw new Error("Building the Apple Speech helper requires Xcode 26 or later.", { cause });
+      if (values.output !== undefined) {
+        NodeFS.writeFileSync(NodePath.join(NodePath.dirname(output), ".keep"), "");
+      }
       console.warn(
         "Skipping the Apple Speech helper (needs Xcode 26 or later); on-device Mac dictation is unavailable in this build.",
       );

@@ -19,7 +19,7 @@ import {
   publishStagedPdfBlob,
   recoverAndSweepBlobs,
   stagePdfBlobFromStream,
-} from "./server/index.ts";
+} from "./server/libraryServer.ts";
 
 const tempDirs: string[] = [];
 

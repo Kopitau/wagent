@@ -2480,6 +2480,7 @@ export const stageAppleSpeech = Effect.fn("stageAppleSpeech")(function* (input: 
   readonly stageResourcesDir: string;
   readonly platform: typeof BuildPlatform.Type;
   readonly arch: typeof BuildArch.Type;
+  readonly signed?: boolean | undefined;
   readonly verbose: boolean;
 }) {
   if (input.platform !== "mac") return;
@@ -2491,6 +2492,7 @@ export const stageAppleSpeech = Effect.fn("stageAppleSpeech")(function* (input: 
         path.join(input.repoRoot, "apps/desktop/scripts/build-apple-speech.mjs"),
         "--arch",
         input.arch,
+        ...(input.signed ? [] : ["--optional"]),
         "--output",
         path.join(input.stageResourcesDir, "apple-speech", "t3-apple-speech"),
       ],
@@ -3882,6 +3884,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     stageResourcesDir,
     platform: options.platform,
     arch: options.arch,
+    signed: options.signed,
     verbose: options.verbose,
   });
 

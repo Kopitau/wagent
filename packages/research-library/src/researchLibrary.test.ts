@@ -19,7 +19,7 @@ import {
   decodeUtf8TextBytes,
   normalizeLibraryUrl,
 } from "./index.ts";
-import { openLibraryDatabase, type LibraryDatabase } from "./server/index.ts";
+import { openLibraryDatabase, type LibraryDatabase } from "./server/libraryServer.ts";
 
 const opened: LibraryDatabase[] = [];
 const tempDirs: string[] = [];

@@ -692,6 +692,93 @@ describe("t3 pair", () => {
       assert.notInclude(String(error), "by hand to see why");
     }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
+
+  it.effect(
+    "pairs via --public-url and T3CODE_PAIR_PUBLIC_URL and rejects mismatched environments",
+    () =>
+      withDescriptorServer((origin) =>
+        Effect.gen(function* () {
+          const fetch = yield* FetchHttpClient.Fetch;
+          const baseDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-pair-public-url-"));
+          yield* persistServerRuntimeState({
+            path: NodePath.join(baseDir, "userdata", "server-runtime.json"),
+            state: yield* makePersistedServerRuntimeState({
+              config: { host: "127.0.0.1", devUrl: undefined },
+              port: Number(new URL(origin).port),
+            }),
+          });
+
+          const output = yield* captureStdout(
+            runCli([
+              "pair",
+              "--base-dir",
+              baseDir,
+              "--public-url",
+              "https://pair-gateway.example.invalid:8443",
+            ]).pipe(
+              Effect.provideService(FetchHttpClient.Fetch, async (input, init) => {
+                if (String(input).startsWith(origin)) return fetch(input, init);
+                assert.equal(
+                  String(input),
+                  "https://pair-gateway.example.invalid:8443/.well-known/t3/environment",
+                );
+                return Response.json(testDescriptor);
+              }),
+            ),
+          );
+          assert.include(
+            output,
+            "Pairing URL: https://pair-gateway.example.invalid:8443/pair#token=",
+          );
+
+          const envOutput = yield* captureStdout(
+            runCli(["pair", "--base-dir", baseDir]).pipe(
+              Effect.provide(
+                ConfigProvider.layer(
+                  ConfigProvider.fromEnv({
+                    env: {
+                      T3CODE_PAIR_PUBLIC_URL: "https://env-gateway.example.invalid:8443",
+                    },
+                  }),
+                ),
+              ),
+              Effect.provideService(FetchHttpClient.Fetch, async (input, init) => {
+                if (String(input).startsWith(origin)) return fetch(input, init);
+                assert.equal(
+                  String(input),
+                  "https://env-gateway.example.invalid:8443/.well-known/t3/environment",
+                );
+                return Response.json(testDescriptor);
+              }),
+            ),
+          );
+          assert.include(
+            envOutput,
+            "Pairing URL: https://env-gateway.example.invalid:8443/pair#token=",
+          );
+
+          const mismatch = yield* Effect.flip(
+            runCli([
+              "pair",
+              "--base-dir",
+              baseDir,
+              "--public-url",
+              "https://other-gateway.example.invalid:8443",
+            ]).pipe(
+              provideCliTestLayers,
+              Effect.provideService(FetchHttpClient.Fetch, async (input, init) => {
+                if (String(input).startsWith(origin)) return fetch(input, init);
+                return Response.json({
+                  ...testDescriptor,
+                  environmentId: "different-environment",
+                });
+              }),
+            ),
+          );
+          assert.include(String(mismatch), "already fronts a different service");
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
 });
 
 describe("auth session revoke", () => {

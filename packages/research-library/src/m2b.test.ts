@@ -10,7 +10,7 @@ import {
   LibrarySsrfRejectedError,
   LibraryValidationError,
 } from "./errors.ts";
-import { openLibraryDatabase, searchImaKnowledgeBase } from "./server/index.ts";
+import { openLibraryDatabase, searchImaKnowledgeBase } from "./server/libraryServer.ts";
 
 const tempDirs: string[] = [];
 

@@ -8,8 +8,8 @@
       "import": "./src/index.ts"
     },
     "./server": {
-      "types": "./src/server/index.ts",
-      "import": "./src/server/index.ts"
+      "types": "./src/server/libraryServer.ts",
+      "import": "./src/server/libraryServer.ts"
     },
     "./reader": {
       "types": "./src/reader/index.ts",

@@ -6,7 +6,7 @@ import * as NodePath from "node:path";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 
 import { LibrarySsrfRejectedError, LibraryValidationError } from "./errors.ts";
-import { fetchFeedItems, openLibraryDatabase, parseFeedXml } from "./server/index.ts";
+import { fetchFeedItems, openLibraryDatabase, parseFeedXml } from "./server/libraryServer.ts";
 
 const tempDirs: string[] = [];
 

@@ -170,6 +170,55 @@ export class ServePortOccupiedError extends Schema.TaggedError<ServePortOccupied
   }
 }
 
+class MutuallyExclusivePairFlagsError extends Schema.TaggedError<MutuallyExclusivePairFlagsError>()(
+  "MutuallyExclusivePairFlagsError",
+  {},
+) {
+  override get message(): string {
+    return "--tailscale and --public-url cannot be used together.";
+  }
+}
+
+class InvalidPublicPairingUrlError extends Schema.TaggedError<InvalidPublicPairingUrlError>()(
+  "InvalidPublicPairingUrlError",
+  { rawUrl: Schema.String },
+) {
+  override get message(): string {
+    return `Invalid public pairing URL \`${this.rawUrl}\`. Provide an http:// or https:// URL without embedded credentials.`;
+  }
+}
+
+class PublicUrlServesOtherEnvironmentError extends Schema.TaggedError<PublicUrlServesOtherEnvironmentError>()(
+  "PublicUrlServesOtherEnvironmentError",
+  { publicUrl: Schema.String },
+) {
+  override get message(): string {
+    return `Public URL ${this.publicUrl} already fronts a different service or T3 Code environment.`;
+  }
+}
+
+const normalizePublicPairingBaseUrl = (
+  rawUrl: string,
+): Effect.Effect<string, InvalidPublicPairingUrlError> => {
+  const trimmed = rawUrl.trim();
+  if (trimmed.length === 0) {
+    return Effect.fail(new InvalidPublicPairingUrlError({ rawUrl }));
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return Effect.fail(new InvalidPublicPairingUrlError({ rawUrl }));
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return Effect.fail(new InvalidPublicPairingUrlError({ rawUrl }));
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    return Effect.fail(new InvalidPublicPairingUrlError({ rawUrl }));
+  }
+  return Effect.succeed(parsed.origin);
+};
+
 const resolveDirectPairingBaseUrl = (
   state: PersistedServerRuntimeState,
   platform: NodeJS.Platform,
@@ -528,6 +577,13 @@ const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
   Flag.withDefault(DEFAULT_TAILSCALE_SERVE_PORT),
 );
 
+const publicUrlFlag = Flag.String("public-url").pipe(
+  Flag.withDescription(
+    "Public HTTP or HTTPS base URL (for example a reverse-proxy tunnel endpoint) for the pairing link.",
+  ),
+  Flag.optional,
+);
+
 export const pairCommand = Command.make("pair", {
   baseDir: baseDirFlag,
   scopes: authScopesFlag(AuthStandardClientScopes),
@@ -535,6 +591,7 @@ export const pairCommand = Command.make("pair", {
   label: labelFlag,
   tailscale: tailscaleFlag,
   tailscaleServePort: tailscaleServePortFlag,
+  publicUrl: publicUrlFlag,
 }).pipe(
   Command.withDescription(
     "Mint a pairing token for a running T3 Code server and print it as a QR code.",
@@ -543,6 +600,10 @@ export const pairCommand = Command.make("pair", {
     Effect.gen(function* () {
       const cliLogLevel = yield* GlobalFlag.LogLevel;
       const logLevel = Option.getOrElse(cliLogLevel, () => "Warn" as const);
+      const explicitPublicUrl = Option.getOrUndefined(flags.publicUrl)?.trim() || undefined;
+      if (flags.tailscale && explicitPublicUrl !== undefined) {
+        return yield* new MutuallyExclusivePairFlagsError();
+      }
 
       const explicitBaseDir = Option.getOrUndefined(flags.baseDir);
       const target = yield* discoverPairTarget(explicitBaseDir);
@@ -563,6 +624,10 @@ export const pairCommand = Command.make("pair", {
         });
       }
 
+      const envPublicUrlOpt = yield* Config.String("T3CODE_PAIR_PUBLIC_URL").pipe(Config.option);
+      const envPublicUrl = Option.getOrUndefined(envPublicUrlOpt)?.trim() || undefined;
+      const effectivePublicUrl = flags.tailscale ? undefined : (explicitPublicUrl ?? envPublicUrl);
+
       const notes: Array<string> = [];
       let pairingBaseUrl: string;
       if (flags.tailscale) {
@@ -580,6 +645,28 @@ export const pairCommand = Command.make("pair", {
         });
         pairingBaseUrl = resolved.baseUrl;
         notes.push(...resolved.notes);
+      } else if (effectivePublicUrl !== undefined) {
+        const policy = yield* ManagedPolicy.ManagedPolicy.pipe(Effect.provide(ManagedPolicy.layer));
+        if (!ManagedLimits.allowsRemoteClients(policy)) {
+          return yield* ManagedLimits.refuseRemoteClients(
+            policy,
+            "so a public pairing URL cannot be issued",
+          );
+        }
+        const baseUrl = yield* normalizePublicPairingBaseUrl(effectivePublicUrl);
+        const probed = yield* probeEnvironmentDescriptor(baseUrl);
+        if (probed._tag === "descriptor") {
+          if (probed.descriptor.environmentId !== target.descriptor.environmentId) {
+            return yield* new PublicUrlServesOtherEnvironmentError({ publicUrl: baseUrl });
+          }
+        } else if (probed._tag === "not-a-t3-server") {
+          return yield* new PublicUrlServesOtherEnvironmentError({ publicUrl: baseUrl });
+        } else {
+          notes.push(
+            "The public URL did not answer /.well-known/t3/environment yet. Ensure your reverse proxy and tunnel forward to this server.",
+          );
+        }
+        pairingBaseUrl = baseUrl;
       } else {
         pairingBaseUrl = resolveDirectPairingBaseUrl(target.state, yield* HostProcess.Platform);
         if (isLoopbackHost(new URL(pairingBaseUrl).hostname)) {
