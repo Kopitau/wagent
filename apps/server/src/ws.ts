@@ -267,6 +267,7 @@ import * as TriageService from "./triage/TriageService.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as LibraryService from "./library/LibraryService.ts";
+import * as WagentService from "./wagent/WagentService.ts";
 import * as ThreadIssueService from "./orchestration-v2/ThreadIssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as PullRequestReviewGuideService from "./pullRequest/PullRequestReviewGuideService.ts";
@@ -1515,6 +1516,7 @@ export const layerWsRpc = (
       const pullRequests = yield* PullRequestService.PullRequestService;
       const issues = yield* IssueService.IssueService;
       const library = yield* LibraryService.LibraryService;
+      const wagent = yield* WagentService.WagentService;
       const threadIssues = yield* ThreadIssueService.ThreadIssueService;
       const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3157,6 +3159,15 @@ export const layerWsRpc = (
         [WS_METHODS.libraryFetchUrl]: (input) => library.fetchUrl(input),
         [WS_METHODS.libraryWkbStatus]: () => library.wkbStatus(),
         [WS_METHODS.libraryImportFromWkb]: (input) => library.importFromWkb(input),
+        [WS_METHODS.wagentStatus]: () => wagent.status,
+        [WS_METHODS.wagentSend]: (input) => wagent.send(input, { source: "ui" }),
+        [WS_METHODS.wagentAbort]: (input) => wagent.abort(input),
+        [WS_METHODS.wagentNewSession]: () => wagent.newSession,
+        [WS_METHODS.wagentDecideApproval]: (input) => wagent.decideApproval(input),
+        [WS_METHODS.wagentImportExportToLibrary]: (input) => wagent.importExportToLibrary(input),
+        [WS_METHODS.wagentConvertToDoc]: (input) => wagent.convertToDoc(input),
+        [WS_METHODS.wagentUpdateConfig]: (input) => wagent.updateConfig(input),
+        [WS_METHODS.subscribeWagentEvents]: () => WagentService.eventsStream(wagent),
         [WS_METHODS.shellOpenInEditor]: (input) => externalLauncher.launchEditor(input),
         [WS_METHODS.filesystemGetMetadata]: (input) => workspaceFileSystem.getMetadata(input),
         [WS_METHODS.filesystemBrowse]: (input) =>
@@ -3770,6 +3781,7 @@ export const layer = Layer.unwrap(
     const pullRequests = yield* PullRequestService.PullRequestService;
     const issues = yield* IssueService.IssueService;
     const library = yield* LibraryService.LibraryService;
+    const wagent = yield* WagentService.WagentService;
     const threadIssues = yield* ThreadIssueService.ThreadIssueService;
     const issueTrackers = yield* IssueTrackerConnections.IssueTrackerConnections;
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
@@ -3871,6 +3883,7 @@ export const layer = Layer.unwrap(
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(Layer.succeed(IssueService.IssueService, issues)),
               Layer.provide(Layer.succeed(LibraryService.LibraryService, library)),
+              Layer.provide(Layer.succeed(WagentService.WagentService, wagent)),
               Layer.provide(Layer.succeed(ThreadIssueService.ThreadIssueService, threadIssues)),
               Layer.provide(
                 Layer.succeed(IssueTrackerConnections.IssueTrackerConnections, issueTrackers),

@@ -61,6 +61,7 @@ import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as LibraryService from "./library/LibraryService.ts";
 import * as LibraryHttp from "./library/http.ts";
+import * as WagentService from "./wagent/WagentService.ts";
 import * as WkbBridgeService from "./wkb/WkbBridgeService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
 import * as IssueTrackerBindings from "./persistence/IssueTrackerBindings.ts";
@@ -941,7 +942,12 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.provide(layerPullRequestService),
   Layer.provide(layerThreadIssueService),
   Layer.provide(layerIssueService),
-  Layer.provide(LibraryService.layer.pipe(Layer.provide(WkbBridgeService.layer))),
+  Layer.provide(
+    Layer.mergeAll(
+      LibraryService.layer,
+      WagentService.layer.pipe(Layer.provide(LibraryService.layer)),
+    ).pipe(Layer.provide(WkbBridgeService.layer)),
+  ),
   // The same activity instance RunExecutionService reports to, by layer memoization.
   Layer.provide(
     ServerBrowser.layer.pipe(

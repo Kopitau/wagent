@@ -134,6 +134,10 @@ export function useResearchLibrarySupported() {
   return useAtomValue(environmentSummaries.researchLibrarySupportedAtom);
 }
 
+export function useWagentSupported() {
+  return useAtomValue(environmentSummaries.wagentSupportedAtom);
+}
+
 export function useEnvironmentMachines() {
   return useAtomValue(environmentSummaries.machineByIdAtom);
 }

@@ -343,6 +343,10 @@
       "types": "./src/state/library.ts",
       "default": "./src/state/library.ts"
     },
+    "./state/wagent": {
+      "types": "./src/state/wagent.ts",
+      "default": "./src/state/wagent.ts"
+    },
     "./state/pull-requests": {
       "types": "./src/state/pullRequests.ts",
       "default": "./src/state/pullRequests.ts"

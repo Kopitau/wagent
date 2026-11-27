@@ -100,6 +100,8 @@ import * as IssuesHandlers from "./toolkits/issues/handlers.ts";
 import { IssuesToolkit } from "./toolkits/issues/tools.ts";
 import * as LibraryHandlers from "./toolkits/library/handlers.ts";
 import { LibraryToolkit } from "./toolkits/library/tools.ts";
+import * as WagentHandlers from "./toolkits/wagent/handlers.ts";
+import { WagentToolkit } from "./toolkits/wagent/tools.ts";
 import * as DeviceHandlers from "./toolkits/device/handlers.ts";
 import {
   DeviceScreenshotTool,
@@ -1466,6 +1468,8 @@ const layerIssuesToolkit = toolkitRegistration(IssuesToolkit, IssuesHandlers.lay
 
 export const layerLibraryToolkit = toolkitRegistration(LibraryToolkit, LibraryHandlers.layer);
 
+export const layerWagentToolkit = toolkitRegistration(WagentToolkit, WagentHandlers.layer);
+
 const layerDeviceStandardToolkitRegistration = toolkitRegistration(
   DeviceStandardToolkit,
   DeviceHandlers.layerStandard,
@@ -1526,6 +1530,7 @@ export const layerTools = Layer.mergeAll(
   layerPullRequestsToolkit,
   layerIssuesToolkit,
   layerLibraryToolkit,
+  layerWagentToolkit,
   layerDeviceToolkit,
   layerHtmlToolkit,
   layerMessageToolkit,

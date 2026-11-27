@@ -279,6 +279,15 @@ const RPC_AGGREGATES = {
   [WS_METHODS.libraryFetchUrl]: "library",
   [WS_METHODS.libraryWkbStatus]: "library",
   [WS_METHODS.libraryImportFromWkb]: "library",
+  [WS_METHODS.wagentStatus]: "wagent",
+  [WS_METHODS.wagentSend]: "wagent",
+  [WS_METHODS.wagentAbort]: "wagent",
+  [WS_METHODS.wagentNewSession]: "wagent",
+  [WS_METHODS.wagentDecideApproval]: "wagent",
+  [WS_METHODS.wagentImportExportToLibrary]: "wagent",
+  [WS_METHODS.wagentConvertToDoc]: "wagent",
+  [WS_METHODS.wagentUpdateConfig]: "wagent",
+  [WS_METHODS.subscribeWagentEvents]: "wagent",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

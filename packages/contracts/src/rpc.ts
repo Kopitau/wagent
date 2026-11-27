@@ -19,6 +19,24 @@ import {
   LibraryWkbStatusResult,
 } from "./library.ts";
 import {
+  WagentAbortInput,
+  WagentAbortResult,
+  WagentConvertToDocInput,
+  WagentConvertToDocResult,
+  WagentDecideApprovalInput,
+  WagentDecideApprovalResult,
+  WagentEvent,
+  WagentImportExportToLibraryInput,
+  WagentImportExportToLibraryResult,
+  WagentNewSessionResult,
+  WagentRpcError,
+  WagentSendInput,
+  WagentSendResult,
+  WagentStatusResult,
+  WagentUpdateConfigInput,
+  WagentUpdateConfigResult,
+} from "./wagent.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -754,6 +772,16 @@ export const WS_METHODS = {
   libraryFetchUrl: "library.fetchUrl",
   libraryWkbStatus: "library.wkbStatus",
   libraryImportFromWkb: "library.importFromWkb",
+
+  wagentStatus: "wagent.status",
+  wagentSend: "wagent.send",
+  wagentAbort: "wagent.abort",
+  wagentNewSession: "wagent.newSession",
+  wagentDecideApproval: "wagent.decideApproval",
+  wagentImportExportToLibrary: "wagent.importExportToLibrary",
+  wagentConvertToDoc: "wagent.convertToDoc",
+  wagentUpdateConfig: "wagent.updateConfig",
+  subscribeWagentEvents: "subscribeWagentEvents",
 
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeVcsBranch: "subscribeVcsBranch",
@@ -1773,6 +1801,58 @@ const WsLibraryImportFromWkbRpc = Rpc.make(WS_METHODS.libraryImportFromWkb, {
   error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
 });
 
+const WsWagentStatusRpc = Rpc.make(WS_METHODS.wagentStatus, {
+  success: WagentStatusResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentSendRpc = Rpc.make(WS_METHODS.wagentSend, {
+  payload: WagentSendInput,
+  success: WagentSendResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentAbortRpc = Rpc.make(WS_METHODS.wagentAbort, {
+  payload: WagentAbortInput,
+  success: WagentAbortResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentNewSessionRpc = Rpc.make(WS_METHODS.wagentNewSession, {
+  success: WagentNewSessionResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentDecideApprovalRpc = Rpc.make(WS_METHODS.wagentDecideApproval, {
+  payload: WagentDecideApprovalInput,
+  success: WagentDecideApprovalResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentImportExportToLibraryRpc = Rpc.make(WS_METHODS.wagentImportExportToLibrary, {
+  payload: WagentImportExportToLibraryInput,
+  success: WagentImportExportToLibraryResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentConvertToDocRpc = Rpc.make(WS_METHODS.wagentConvertToDoc, {
+  payload: WagentConvertToDocInput,
+  success: WagentConvertToDocResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsWagentUpdateConfigRpc = Rpc.make(WS_METHODS.wagentUpdateConfig, {
+  payload: WagentUpdateConfigInput,
+  success: WagentUpdateConfigResult,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsSubscribeWagentEventsRpc = Rpc.make(WS_METHODS.subscribeWagentEvents, {
+  success: WagentEvent,
+  error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -2720,6 +2800,15 @@ export const WsRpcGroup = RpcGroup.make(
   WsLibraryFetchUrlRpc,
   WsLibraryWkbStatusRpc,
   WsLibraryImportFromWkbRpc,
+  WsWagentStatusRpc,
+  WsWagentSendRpc,
+  WsWagentAbortRpc,
+  WsWagentNewSessionRpc,
+  WsWagentDecideApprovalRpc,
+  WsWagentImportExportToLibraryRpc,
+  WsWagentConvertToDocRpc,
+  WsWagentUpdateConfigRpc,
+  WsSubscribeWagentEventsRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsWorkspaceListFoldersRpc,

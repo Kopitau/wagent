@@ -348,6 +348,13 @@ export function createEnvironmentSummaryAtoms(input: {
           .researchLibrary === true,
     ),
   );
+  const wagentSupportedAtom = Atom.make((get) =>
+    get(environmentIdsAtom).some(
+      (environmentId) =>
+        get(input.presentationAtom(environmentId))?.serverConfig?.environment.capabilities
+          .wagent === true,
+    ),
+  );
   return {
     environmentIdsAtom,
     connectedEnvironmentIdsAtom,
@@ -357,5 +364,6 @@ export function createEnvironmentSummaryAtoms(input: {
     pullRequestsSupportedAtom,
     issuesSupportedAtom,
     researchLibrarySupportedAtom,
+    wagentSupportedAtom,
   };
 }

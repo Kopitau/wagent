@@ -228,6 +228,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   issueTrackerAccounts: Schema.optionalKey(Schema.Boolean),
   /** Serves the environment-local research library RPCs. Absent on older servers. */
   researchLibrary: Schema.optionalKey(Schema.Boolean),
+  /** Serves the independent Wagent personal digital-twin dispatcher RPCs. Absent on older servers. */
+  wagent: Schema.optionalKey(Schema.Boolean),
 });
 export type ExecutionEnvironmentCapabilities = typeof ExecutionEnvironmentCapabilities.Type;
 

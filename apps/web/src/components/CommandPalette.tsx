@@ -62,6 +62,7 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
   BookOpenIcon,
+  BotIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
@@ -123,6 +124,7 @@ import { configuredHostedAppUrl } from "../hostedPairing";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
 import { useAnyLibraryReadable } from "../state/library";
+import { useAnyWagentReadable } from "../state/wagent";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
@@ -519,6 +521,7 @@ function OpenCommandPaletteDialog(props: {
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
   const workflowsReachable = useWorkflowEnvironmentIds().length > 0;
   const libraryReadable = useAnyLibraryReadable();
+  const wagentReadable = useAnyWagentReadable();
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -1777,6 +1780,19 @@ function OpenCommandPaletteDialog(props: {
       icon: <BookOpenIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/library" });
+      },
+    });
+  }
+
+  if (wagentReadable) {
+    actionItems.push({
+      kind: "action",
+      value: "action:wagent",
+      searchTerms: ["wagent", "assistant", "telegram", "digital twin", "exports", "personal"],
+      title: gt("Open Wagent"),
+      icon: <BotIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/wagent" });
       },
     });
   }

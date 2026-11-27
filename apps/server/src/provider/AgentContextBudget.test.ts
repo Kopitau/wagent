@@ -41,6 +41,7 @@ import { ProjectService } from "../project/ProjectService.ts";
 import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts";
 import { IssueService } from "../issue/IssueService.ts";
 import { LibraryService } from "../library/LibraryService.ts";
+import { WagentService } from "../wagent/WagentService.ts";
 import { PullRequestReviewGuideService } from "../pullRequest/PullRequestReviewGuideService.ts";
 import { PullRequestService } from "../pullRequest/PullRequestService.ts";
 import { ScheduledTaskService } from "../scheduledTasks/ScheduledTaskService.ts";
@@ -69,6 +70,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(TaskFolders)({}),
   Layer.mock(IssueService)({}),
   Layer.mock(LibraryService)({}),
+  Layer.mock(WagentService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
   Layer.mock(McpProviderSessions)({}),
   Layer.mock(OrchestratorV2)({}),

@@ -95,6 +95,13 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.libraryDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.libraryFetchUrl]: AuthOrchestrationOperateScope,
   [WS_METHODS.libraryImportFromWkb]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentSend]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentAbort]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentNewSession]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentDecideApproval]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentImportExportToLibrary]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentConvertToDoc]: AuthOrchestrationOperateScope,
+  [WS_METHODS.wagentUpdateConfig]: AuthSettingsWriteScope,
   // The server runs this file: saving it is running code there, as a terminal does.
   [WS_METHODS.workflowsSaveDefinition]: AuthTerminalOperateScope,
   [WS_METHODS.workflowsDeleteDefinition]: AuthTerminalOperateScope,
@@ -141,6 +148,13 @@ export function clientRpcRequiredScopes(
   }
   if (method === WS_METHODS.guestShareCreate) {
     return [AuthAccessWriteScope, AuthOrchestrationReadScope];
+  }
+  // Updating Wagent config can change model/API keys, Telegram bot token, and wkb token.
+  if (method === WS_METHODS.wagentUpdateConfig) {
+    return [AuthSettingsWriteScope, AuthProvidersManageScope];
+  }
+  if (method === WS_METHODS.subscribeWagentEvents) {
+    return [AuthOrchestrationReadScope];
   }
   return Object.hasOwn(CLIENT_GUARDED_RPC_SCOPES, method)
     ? [CLIENT_GUARDED_RPC_SCOPES[method as ClientGuardedRpcTag]]

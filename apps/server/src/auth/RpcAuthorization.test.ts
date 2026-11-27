@@ -1122,3 +1122,118 @@ it.effect("enforces orchestration:read and orchestration:operate on research lib
     expect(saves).toBe(1);
   }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "enforces orchestration scopes on Wagent RPCs and dual settings:write + providers:manage on wagent.updateConfig",
+  () =>
+    Effect.gen(function* () {
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RPC_REQUIRED_SCOPES,
+            | typeof WS_METHODS.wagentStatus
+            | typeof WS_METHODS.wagentSend
+            | typeof WS_METHODS.wagentUpdateConfig
+          > =>
+            tag !== WS_METHODS.wagentStatus &&
+            tag !== WS_METHODS.wagentSend &&
+            tag !== WS_METHODS.wagentUpdateConfig,
+        ),
+      );
+
+      let configUpdates = 0;
+      const sampleStatus = {
+        running: false,
+        sessionId: "session-1",
+        activeRun: null,
+        queuedRuns: [],
+        recentRuns: [],
+        pendingApprovals: [],
+        exports: [],
+        config: {
+          workspace: "/tmp/Wagent",
+          model: { provider: "deepseek", id: "deepseek-reasoner", thinking: "high" as const },
+          kbUrl: "https://kb.example.invalid/kb/mcp",
+          kbDir: "/tmp/kb",
+          confirmTimeoutSec: 600,
+          telegramEnabled: false,
+          allowedUserIds: [],
+          proxy: "",
+          agentDir: "/tmp/agent",
+          hasTelegramBotToken: false,
+          hasDeepseekApiKey: false,
+          hasWkbToken: false,
+        },
+        telegramConnected: false,
+        agentDirReady: false,
+        kbDirReady: false,
+      };
+
+      const handlers = Layer.mergeAll(
+        group.toLayerHandler(WS_METHODS.wagentStatus, () => Effect.succeed(sampleStatus)),
+        group.toLayerHandler(WS_METHODS.wagentSend, (input) =>
+          Effect.succeed({
+            run: {
+              id: "run-1",
+              prompt: input.prompt,
+              source: "ui" as const,
+              status: "queued" as const,
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              completedAt: null,
+              output: "",
+              error: null,
+              steps: [],
+            },
+          }),
+        ),
+        group.toLayerHandler(WS_METHODS.wagentUpdateConfig, () =>
+          Effect.sync(() => {
+            configUpdates += 1;
+            return { status: sampleStatus };
+          }),
+        ),
+      );
+
+      const reader = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+      );
+      expect((yield* reader[WS_METHODS.wagentStatus]()).sessionId).toBe("session-1");
+      expect(
+        yield* reader[WS_METHODS.wagentSend]({ prompt: "blocked" }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+
+      const settingsOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthSettingsWriteScope]))),
+      );
+      expect(
+        yield* settingsOnly[WS_METHODS.wagentUpdateConfig]({ telegramEnabled: true }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+
+      const providersOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthProvidersManageScope]))),
+      );
+      expect(
+        yield* providersOnly[WS_METHODS.wagentUpdateConfig]({ telegramEnabled: true }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(configUpdates).toBe(0);
+
+      const dualAdmin = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            handlers,
+            RpcAuthorization.layer([AuthSettingsWriteScope, AuthProvidersManageScope]),
+          ),
+        ),
+      );
+      const updated = yield* dualAdmin[WS_METHODS.wagentUpdateConfig]({ telegramEnabled: true });
+      expect(updated.status.sessionId).toBe("session-1");
+      expect(configUpdates).toBe(1);
+    }).pipe(Effect.scoped),
+);

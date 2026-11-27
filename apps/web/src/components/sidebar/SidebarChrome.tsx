@@ -2,6 +2,7 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BookOpenIcon,
+  BotIcon,
   ChartNoAxesColumnIcon,
   SettingsIcon,
 } from "lucide-react";
@@ -24,8 +25,10 @@ import {
   useIssuesSupported,
   usePullRequestsSupported,
   useResearchLibrarySupported,
+  useWagentSupported,
 } from "../../state/environments";
 import { useAnyLibraryReadable } from "../../state/library";
+import { useAnyWagentReadable } from "../../state/wagent";
 import { T3Wordmark } from "../T3Wordmark";
 import {
   resolveEnvironmentIdentificationPillLabel,
@@ -248,6 +251,8 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const issuesSupported = useIssuesSupported();
   const researchLibrarySupported = useResearchLibrarySupported();
   const canReadLibrary = useAnyLibraryReadable();
+  const wagentSupported = useWagentSupported();
+  const canReadWagent = useAnyWagentReadable();
   const closeMobileSidebar = () => {
     if (isMobile) {
       setOpenMobile(false);
@@ -256,6 +261,10 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
   const handleLibraryClick = () => {
     closeMobileSidebar();
     void navigate({ to: "/library" });
+  };
+  const handleWagentClick = () => {
+    closeMobileSidebar();
+    void navigate({ to: "/wagent" });
   };
   const handlePullRequestsClick = () => {
     closeMobileSidebar();
@@ -322,6 +331,13 @@ const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
               icon={<BookOpenIcon />}
               label={gt("Library", { $context: "sidebar link to the research library" })}
               onClick={handleLibraryClick}
+            />
+          ) : null}
+          {wagentSupported && canReadWagent ? (
+            <SidebarUtilityItem
+              icon={<BotIcon />}
+              label={gt("Wagent", { $context: "sidebar link to the personal Wagent dispatcher" })}
+              onClick={handleWagentClick}
             />
           ) : null}
           <SidebarUtilityItem
