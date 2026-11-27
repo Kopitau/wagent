@@ -2,11 +2,13 @@ export { WkbBridgeError } from "./errors.ts";
 export {
   WKB_DEFAULT_EXPORT_TIMEOUT_MS,
   WKB_DEFAULT_MAX_MARKDOWN_BYTES,
+  canonicalizeWkbEndpointUrl,
   detectWkbInstallation,
   inferWkbEntryKind,
   runWkbAnnotate,
   runWkbExport,
   runWkbSubmit,
+  runWkbWorkHarvest,
 } from "./wkbBridge.ts";
 export type {
   DetectWkbOptions,
@@ -15,6 +17,7 @@ export type {
   RunWkbExportInput,
   RunWkbExportOptions,
   RunWkbSubmitInput,
+  RunWkbWorkHarvestInput,
   WkbAnnotateResult,
   WkbAnnotationItem,
   WkbAnnotationKind,
@@ -23,4 +26,5 @@ export type {
   WkbInstallationStatus,
   WkbMode,
   WkbSubmitResult,
+  WkbWorkHarvestResult,
 } from "./types.ts";

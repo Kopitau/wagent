@@ -59,21 +59,34 @@ export interface TelegramPort {
     chatId: number,
     text: string,
     extra?: { readonly reply_markup?: { readonly inline_keyboard: TelegramInlineKeyboard } },
+    signal?: AbortSignal,
   ) => Promise<{ readonly message_id: number }>;
   readonly editMessageText: (
     chatId: number,
     messageId: number,
     text: string,
     extra?: { readonly reply_markup?: { readonly inline_keyboard: TelegramInlineKeyboard } },
+    signal?: AbortSignal,
   ) => Promise<void>;
-  readonly deleteMessage: (chatId: number, messageId: number) => Promise<void>;
-  readonly sendChatAction: (chatId: number, action?: string) => Promise<void>;
-  readonly answerCallbackQuery: (id: string, text?: string) => Promise<void>;
-  readonly sendDocument: (chatId: number, filePath: string, caption?: string) => Promise<void>;
+  readonly deleteMessage: (
+    chatId: number,
+    messageId: number,
+    signal?: AbortSignal,
+  ) => Promise<void>;
+  readonly sendChatAction: (chatId: number, action?: string, signal?: AbortSignal) => Promise<void>;
+  readonly answerCallbackQuery: (id: string, text?: string, signal?: AbortSignal) => Promise<void>;
+  readonly sendDocument: (
+    chatId: number,
+    filePath: string,
+    caption?: string,
+    signal?: AbortSignal,
+    shouldSend?: () => boolean,
+  ) => Promise<void>;
   readonly downloadFile: (
     fileId: string,
     destDir: string,
     preferredName?: string,
+    signal?: AbortSignal,
   ) => Promise<string>;
 }
 
@@ -146,12 +159,17 @@ export class TelegramClient implements TelegramPort {
     chatId: number,
     text: string,
     extra: { readonly reply_markup?: { readonly inline_keyboard: TelegramInlineKeyboard } } = {},
+    signal?: AbortSignal,
   ): Promise<{ readonly message_id: number }> {
-    return this.#call<{ readonly message_id: number }>("sendMessage", {
-      chat_id: chatId,
-      text,
-      ...extra,
-    });
+    return this.#call<{ readonly message_id: number }>(
+      "sendMessage",
+      {
+        chat_id: chatId,
+        text,
+        ...extra,
+      },
+      signal,
+    );
   }
 
   async editMessageText(
@@ -159,39 +177,64 @@ export class TelegramClient implements TelegramPort {
     messageId: number,
     text: string,
     extra: { readonly reply_markup?: { readonly inline_keyboard: TelegramInlineKeyboard } } = {},
+    signal?: AbortSignal,
   ): Promise<void> {
-    await this.#call("editMessageText", {
-      chat_id: chatId,
-      message_id: messageId,
-      text,
-      ...extra,
-    });
+    await this.#call(
+      "editMessageText",
+      {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        ...extra,
+      },
+      signal,
+    );
   }
 
-  async deleteMessage(chatId: number, messageId: number): Promise<void> {
-    await this.#call("deleteMessage", {
-      chat_id: chatId,
-      message_id: messageId,
-    });
+  async deleteMessage(chatId: number, messageId: number, signal?: AbortSignal): Promise<void> {
+    await this.#call(
+      "deleteMessage",
+      {
+        chat_id: chatId,
+        message_id: messageId,
+      },
+      signal,
+    );
   }
 
-  async sendChatAction(chatId: number, action = "typing"): Promise<void> {
-    await this.#call("sendChatAction", { chat_id: chatId, action });
+  async sendChatAction(chatId: number, action = "typing", signal?: AbortSignal): Promise<void> {
+    await this.#call("sendChatAction", { chat_id: chatId, action }, signal);
   }
 
-  async answerCallbackQuery(id: string, text?: string): Promise<void> {
-    await this.#call("answerCallbackQuery", {
-      callback_query_id: id,
-      ...(text ? { text } : {}),
-    });
+  async answerCallbackQuery(id: string, text?: string, signal?: AbortSignal): Promise<void> {
+    await this.#call(
+      "answerCallbackQuery",
+      {
+        callback_query_id: id,
+        ...(text ? { text } : {}),
+      },
+      signal,
+    );
   }
 
-  async sendDocument(chatId: number, filePath: string, caption?: string): Promise<void> {
+  async sendDocument(
+    chatId: number,
+    filePath: string,
+    caption?: string,
+    signal?: AbortSignal,
+    shouldSend?: () => boolean,
+  ): Promise<void> {
     const stat = await NodeFSP.stat(filePath);
     if (stat.size > MAX_TELEGRAM_UPLOAD_BYTES) {
       throw new Error(`File exceeds Telegram 50 MiB limit (${stat.size} bytes).`);
     }
     const bytes = await NodeFSP.readFile(filePath);
+    if (signal?.aborted) {
+      throw new Error("Telegram sendDocument aborted.");
+    }
+    if (shouldSend && !shouldSend()) {
+      return;
+    }
     const form = new FormData();
     form.set("chat_id", String(chatId));
     if (caption) form.set("caption", caption.slice(0, 1024));
@@ -199,6 +242,7 @@ export class TelegramClient implements TelegramPort {
     const response = await this.#fetchImpl(`${this.#baseUrl}/sendDocument`, {
       method: "POST",
       body: form,
+      ...(signal ? { signal } : {}),
     });
     const json = (await response.json()) as { ok: boolean; description?: string };
     if (!json.ok) {
@@ -206,17 +250,29 @@ export class TelegramClient implements TelegramPort {
     }
   }
 
-  async downloadFile(fileId: string, destDir: string, preferredName?: string): Promise<string> {
-    const fileInfo = await this.#call<{ file_path?: string; file_size?: number }>("getFile", {
-      file_id: fileId,
-    });
+  async downloadFile(
+    fileId: string,
+    destDir: string,
+    preferredName?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    const fileInfo = await this.#call<{ file_path?: string; file_size?: number }>(
+      "getFile",
+      {
+        file_id: fileId,
+      },
+      signal,
+    );
     if (!fileInfo.file_path) {
       throw new Error("Telegram getFile returned empty file_path.");
     }
     if (fileInfo.file_size && fileInfo.file_size > MAX_TELEGRAM_DOWNLOAD_BYTES) {
       throw new Error("Telegram file exceeds 20 MiB download limit.");
     }
-    const response = await this.#fetchImpl(`${this.#fileBaseUrl}/${fileInfo.file_path}`);
+    const response = await this.#fetchImpl(
+      `${this.#fileBaseUrl}/${fileInfo.file_path}`,
+      signal ? { signal } : undefined,
+    );
     if (!response.ok) {
       throw new Error(`Telegram file download failed: HTTP ${response.status}`);
     }

@@ -1,5 +1,5 @@
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, LIBRARY_UPLOAD_METADATA_HEADER } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -36,6 +36,8 @@ it.effect("authenticates PDF downloads and uploads with DPoP signing and 401 tok
       readonly method: string;
       readonly authorization: string | null;
       readonly dpop: string | null;
+      readonly metadataHeader: string | null;
+      readonly contentType: string | null;
     }> = [];
     let attempt = 0;
 
@@ -48,6 +50,8 @@ it.effect("authenticates PDF downloads and uploads with DPoP signing and 401 tok
         method: init?.method ?? "GET",
         authorization: headers.get("authorization"),
         dpop: headers.get("dpop"),
+        metadataHeader: headers.get(LIBRARY_UPLOAD_METADATA_HEADER),
+        contentType: headers.get("content-type"),
       });
 
       if (url.includes("/api/library/items/")) {
@@ -136,11 +140,25 @@ it.effect("authenticates PDF downloads and uploads with DPoP signing and 401 tok
       fileName: "paper.pdf",
       bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
       title: "Uploaded Paper",
+      note: "Private note not in URL",
       tags: ["ai"],
     }).pipe(Effect.provide(layer));
     expect(uploaded.id).toBe("entry-pdf-1");
     expect(requests[2]?.method).toBe("POST");
-    expect(requests[2]?.url).toContain("/api/library/upload?fileName=paper.pdf");
+    expect(requests[2]?.url).toBe("https://env-a.t3connect.test/api/library/upload");
+    expect(requests[2]?.url).not.toContain("Private");
+    expect(requests[2]?.metadataHeader).toBe("framed");
+    expect(requests[2]?.contentType).toBe("application/octet-stream");
+
+    // Large note (> 8 KiB) uses framed stream body instead of oversized HTTP header
+    const longNote = "L".repeat(20_000);
+    yield* uploadEnvironmentLibraryPdf({
+      fileName: "large-note.pdf",
+      bytes: new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]),
+      note: longNote,
+    }).pipe(Effect.provide(layer));
+    expect(requests[3]?.metadataHeader).toBe("framed");
+    expect(requests[3]?.contentType).toBe("application/octet-stream");
   }),
 );
 

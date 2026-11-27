@@ -14,6 +14,14 @@ import {
 } from "../errors.ts";
 import {
   LIBRARY_DEFAULT_LIST_LIMIT,
+  LIBRARY_FEED_DEFAULT_DAILY_AI_BUDGET,
+  LIBRARY_FEED_DEFAULT_INTERVAL_MINUTES,
+  LIBRARY_FEED_DEFAULT_ITEMS_PER_RUN,
+  LIBRARY_FEED_KINDS,
+  LIBRARY_FEED_MAX_DAILY_AI_BUDGET,
+  LIBRARY_FEED_MAX_INTERVAL_MINUTES,
+  LIBRARY_FEED_MAX_ITEMS_PER_RUN,
+  LIBRARY_FEED_MIN_INTERVAL_MINUTES,
   LIBRARY_MAX_DRAFT_ITEMS,
   LIBRARY_MAX_LIST_LIMIT,
   LIBRARY_MCP_DEFAULT_READ_CHARS,
@@ -27,10 +35,15 @@ import {
   type DeleteLibraryEntryInput,
   type DeleteLibraryEntryResult,
   type ImportTextFileInput,
+  type IngestLibraryFeedItemInput,
+  type IngestLibraryFeedItemResult,
+  type LibraryDailyAiBudgetAttempt,
   type LibraryEntry,
   type LibraryEntryKind,
   type LibraryEntryPage,
   type LibraryEntrySummary,
+  type LibraryFeed,
+  type LibraryFeedKind,
   type LibraryMcpReadItemInput,
   type LibraryMcpReadItemResult,
   type LibraryMcpReadingNoteItem,
@@ -46,6 +59,7 @@ import {
   type ListLibraryEntriesResult,
   type SaveLibraryEntryInput,
   type UpdateLibraryEntryInput,
+  type UpsertLibraryFeedInput,
   type UpsertReadingParagraphInput,
   type UpsertReadingQuestionInput,
 } from "../types.ts";
@@ -60,10 +74,11 @@ import {
   validateTextImportFile,
 } from "../validation.ts";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MAX_QUERY_TERMS = 8;
 const MAX_MATCHED_PAGES_PER_SUMMARY = 8;
 const VALID_PAGE_STATUSES: ReadonlySet<string> = new Set(LIBRARY_PAGE_EXTRACTION_STATUSES);
+const VALID_FEED_KINDS: ReadonlySet<string> = new Set(LIBRARY_FEED_KINDS);
 
 interface EntryRow {
   readonly id: string;
@@ -135,7 +150,10 @@ export interface LibraryDatabase {
     readonly question: string;
     readonly maxTotalChars?: number | undefined;
   }) => ComposeLibraryDraftResult;
-  readonly getReadingState: (entryId: string) => LibraryReadingState;
+  readonly getReadingState: (
+    entryId: string,
+    options?: { readonly includePages?: boolean | undefined },
+  ) => LibraryReadingState;
   readonly setReadingPosition: (entryId: string, physicalPage: number) => number;
   readonly upsertReadingParagraph: (input: UpsertReadingParagraphInput) => LibraryReadingParagraph;
   readonly upsertReadingQuestion: (input: UpsertReadingQuestionInput) => LibraryReadingQuestion;
@@ -153,6 +171,35 @@ export interface LibraryDatabase {
   readonly appendNoteIdempotent: (
     input: AppendLibraryNoteIdempotentInput,
   ) => AppendLibraryNoteIdempotentResult;
+  readonly listFeeds: () => ReadonlyArray<LibraryFeed>;
+  readonly getFeed: (id: string) => LibraryFeed | null;
+  readonly upsertFeed: (input: UpsertLibraryFeedInput) => LibraryFeed;
+  readonly setFeedEnabled: (id: string, enabled: boolean) => LibraryFeed;
+  readonly deleteFeed: (id: string) => boolean;
+  readonly hasFeedSeenItem: (
+    feedId: string,
+    externalId: string,
+    normalizedUrl: string | null,
+  ) => boolean;
+  readonly markFeedItemSeen: (
+    feedId: string,
+    externalId: string,
+    normalizedUrl: string | null,
+    entryId: string | null,
+  ) => void;
+  readonly ingestFeedItem: (input: IngestLibraryFeedItemInput) => IngestLibraryFeedItemResult;
+  readonly recordFeedRun: (input: {
+    readonly feedId: string;
+    readonly status: string;
+    readonly error: string | null;
+    readonly importedCount: number;
+  }) => LibraryFeed;
+  readonly getDailyAiUsageCount: (usageDate?: string) => number;
+  readonly consumeDailyAiBudget: (
+    limit: number,
+    usageDate?: string,
+    feedId?: string,
+  ) => LibraryDailyAiBudgetAttempt;
 }
 
 function parseTagsJson(raw: string): ReadonlyArray<string> {
@@ -468,6 +515,46 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
             ON reading_paragraphs(entry_id, physical_page);
           CREATE INDEX IF NOT EXISTS idx_reading_questions_entry
             ON reading_questions(entry_id, created_at DESC);
+
+          CREATE TABLE IF NOT EXISTS library_feeds (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            url TEXT UNIQUE NOT NULL,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            interval_minutes INTEGER NOT NULL DEFAULT 360,
+            max_items_per_run INTEGER NOT NULL DEFAULT 10,
+            auto_summarize INTEGER NOT NULL DEFAULT 0,
+            ai_instance_id TEXT,
+            ai_model TEXT,
+            daily_ai_budget INTEGER NOT NULL DEFAULT 5,
+            last_run_at TEXT,
+            last_status TEXT,
+            last_error TEXT,
+            last_imported_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+
+          CREATE TABLE IF NOT EXISTS library_feed_seen (
+            feed_id TEXT NOT NULL REFERENCES library_feeds(id) ON DELETE CASCADE,
+            external_id TEXT NOT NULL,
+            normalized_url TEXT,
+            entry_id TEXT REFERENCES entries(id) ON DELETE SET NULL,
+            seen_at TEXT NOT NULL,
+            PRIMARY KEY (feed_id, external_id)
+          ) STRICT;
+
+          CREATE INDEX IF NOT EXISTS idx_library_feed_seen_url
+            ON library_feed_seen(feed_id, normalized_url)
+            WHERE normalized_url IS NOT NULL;
+
+          CREATE TABLE IF NOT EXISTS library_ai_daily_usage (
+            usage_date TEXT PRIMARY KEY,
+            count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+          ) STRICT;
 
           PRAGMA user_version = ${SCHEMA_VERSION};
         `);
@@ -1128,7 +1215,10 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       return existing;
     };
 
-    const getReadingState = (entryId: string): LibraryReadingState => {
+    const getReadingState = (
+      entryId: string,
+      options?: { readonly includePages?: boolean | undefined },
+    ): LibraryReadingState => {
       requireEntryExists(entryId);
       const posRow = db
         .prepare("SELECT physical_page FROM reading_positions WHERE entry_id = ?")
@@ -1249,7 +1339,7 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
           updatedAt: row.updated_at,
         })),
         preferences,
-        pages: getEntryPages(entryId),
+        pages: options?.includePages === false ? [] : getEntryPages(entryId),
       };
     };
 
@@ -1401,10 +1491,11 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       return runInImmediateTransaction(db, () => {
         const existing = db
           .prepare(
-            "SELECT created_at, self_answer, answer, sources_json, model_id FROM reading_questions WHERE id = ? AND entry_id = ?",
+            "SELECT entry_id, created_at, self_answer, answer, sources_json, model_id FROM reading_questions WHERE id = ?",
           )
-          .get(id, input.entryId) as
+          .get(id) as
           | {
+              readonly entry_id: string;
               readonly created_at: string;
               readonly self_answer: string;
               readonly answer: string;
@@ -1412,6 +1503,13 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
               readonly model_id: string;
             }
           | undefined;
+
+        if (existing && existing.entry_id !== input.entryId) {
+          throw new LibraryValidationError(
+            "id",
+            "Question ID belongs to a different library entry.",
+          );
+        }
 
         const next: LibraryReadingQuestion = {
           id,
@@ -1533,15 +1631,27 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       );
       const includeCards = input.includeCards ?? true;
 
+      const totalRow = db
+        .prepare(
+          `SELECT COUNT(*) AS count
+           FROM reading_paragraphs
+           WHERE entry_id = ?
+             AND (note != '' OR marked = 1 OR highlighted = 1 OR analysis_json IS NOT NULL)`,
+        )
+        .get(entry.id) as { readonly count: number } | undefined;
+      const totalItems = Number(totalRow?.count ?? 0);
+
+      const pageLimit = 200;
       const rows = db
         .prepare(
           `SELECT physical_page, anchor, quote, note, marked, highlighted, wkb_kind, analysis_json
            FROM reading_paragraphs
            WHERE entry_id = ?
              AND (note != '' OR marked = 1 OR highlighted = 1 OR analysis_json IS NOT NULL)
-           ORDER BY physical_page ASC, updated_at ASC`,
+           ORDER BY physical_page ASC, updated_at ASC
+           LIMIT ? OFFSET ?`,
         )
-        .all(entry.id) as unknown as ReadonlyArray<{
+        .all(entry.id, pageLimit, cursor) as unknown as ReadonlyArray<{
         readonly physical_page: number;
         readonly anchor: string;
         readonly quote: string;
@@ -1562,9 +1672,9 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       }
       budget -= entryNote.length;
 
-      let idx = cursor;
-      for (; idx < rows.length; idx += 1) {
-        const row = rows[idx]!;
+      let consumedInBatch = 0;
+      for (; consumedInBatch < rows.length; consumedInBatch += 1) {
+        const row = rows[consumedInBatch]!;
         let cardSummary: string | null = null;
         if (includeCards && row.analysis_json) {
           try {
@@ -1576,33 +1686,53 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
             // Ignore malformed analysis JSON.
           }
         }
-        const quote = row.quote.slice(0, 600);
-        const itemCost = quote.length + row.note.length + (cardSummary?.length ?? 0) + 48;
-        if (items.length > 0 && itemCost > budget) {
+        let quote = row.quote.slice(0, 600);
+        let note = row.note;
+        const overhead = 48;
+        const rawItemCost = quote.length + note.length + (cardSummary?.length ?? 0) + overhead;
+        if (items.length > 0 && rawItemCost > budget) {
           truncated = true;
           break;
         }
+        if (rawItemCost > budget) {
+          // First item exceeds remaining budget: clamp quote, note, and cardSummary to fit maxChars.
+          truncated = true;
+          let availableTextChars = Math.max(32, budget - overhead);
+          if (quote.length > Math.floor(availableTextChars / 2)) {
+            quote = quote.slice(0, Math.floor(availableTextChars / 2));
+          }
+          availableTextChars = Math.max(0, availableTextChars - quote.length);
+          if (cardSummary && cardSummary.length > Math.floor(availableTextChars / 2)) {
+            cardSummary = cardSummary.slice(0, Math.floor(availableTextChars / 2));
+          }
+          availableTextChars = Math.max(0, availableTextChars - (cardSummary?.length ?? 0));
+          if (note.length > availableTextChars) {
+            note = note.slice(0, availableTextChars);
+          }
+        }
+        const finalCost = quote.length + note.length + (cardSummary?.length ?? 0) + overhead;
         items.push({
           physicalPage: row.physical_page,
           anchor: row.anchor,
           quote,
-          note: row.note,
+          note,
           marked: row.marked !== 0,
           highlighted: row.highlighted !== 0,
           wkbKind: row.wkb_kind,
           cardSummary,
         });
-        budget = Math.max(0, budget - itemCost);
+        budget = Math.max(0, budget - finalCost);
       }
 
+      const nextIndex = cursor + consumedInBatch;
       return {
         entryId: entry.id,
         title: entry.title,
         entryNote,
         items,
-        nextCursor: idx < rows.length ? idx : null,
-        totalItems: rows.length,
-        truncated: truncated || idx < rows.length,
+        nextCursor: nextIndex < totalItems ? nextIndex : null,
+        totalItems,
+        truncated: truncated || nextIndex < totalItems,
         untrustedContentNotice: LIBRARY_UNTRUSTED_DATA_NOTICE,
       };
     };
@@ -1674,6 +1804,440 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       });
     };
 
+    interface FeedRow {
+      readonly id: string;
+      readonly name: string;
+      readonly kind: string;
+      readonly url: string;
+      readonly tags_json: string;
+      readonly enabled: number;
+      readonly interval_minutes: number;
+      readonly max_items_per_run: number;
+      readonly auto_summarize: number;
+      readonly ai_instance_id: string | null;
+      readonly ai_model: string | null;
+      readonly daily_ai_budget: number;
+      readonly last_run_at: string | null;
+      readonly last_status: string | null;
+      readonly last_error: string | null;
+      readonly last_imported_count: number;
+      readonly created_at: string;
+      readonly updated_at: string;
+    }
+
+    const rowToFeed = (row: FeedRow): LibraryFeed => ({
+      id: row.id,
+      name: row.name,
+      kind: (VALID_FEED_KINDS.has(row.kind) ? row.kind : "rss") as LibraryFeedKind,
+      url: row.url,
+      tags: parseTagsJson(row.tags_json),
+      enabled: row.enabled !== 0,
+      intervalMinutes: row.interval_minutes,
+      maxItemsPerRun: row.max_items_per_run,
+      autoSummarize: row.auto_summarize !== 0,
+      aiInstanceId: row.ai_instance_id,
+      aiModel: row.ai_model,
+      dailyAiBudget: row.daily_ai_budget,
+      lastRunAt: row.last_run_at,
+      lastStatus: row.last_status,
+      lastError: row.last_error,
+      lastImportedCount: row.last_imported_count,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    });
+
+    const listFeeds = (): ReadonlyArray<LibraryFeed> => {
+      const rows = db
+        .prepare(
+          `SELECT id, name, kind, url, tags_json, enabled, interval_minutes, max_items_per_run,
+                  auto_summarize, ai_instance_id, ai_model, daily_ai_budget,
+                  last_run_at, last_status, last_error, last_imported_count, created_at, updated_at
+           FROM library_feeds
+           ORDER BY updated_at DESC, id ASC`,
+        )
+        .all() as unknown as ReadonlyArray<FeedRow>;
+      return rows.map(rowToFeed);
+    };
+
+    const getFeed = (id: string): LibraryFeed | null => {
+      const trimmed = id.trim();
+      if (!trimmed) return null;
+      const row = db
+        .prepare(
+          `SELECT id, name, kind, url, tags_json, enabled, interval_minutes, max_items_per_run,
+                  auto_summarize, ai_instance_id, ai_model, daily_ai_budget,
+                  last_run_at, last_status, last_error, last_imported_count, created_at, updated_at
+           FROM library_feeds
+           WHERE id = ?`,
+        )
+        .get(trimmed) as FeedRow | undefined;
+      return row ? rowToFeed(row) : null;
+    };
+
+    const upsertFeed = (input: UpsertLibraryFeedInput): LibraryFeed => {
+      const name = input.name.trim();
+      if (!name || name.length > 200) {
+        throw new LibraryValidationError("name", "Feed name must be 1-200 characters.");
+      }
+      if (!VALID_FEED_KINDS.has(input.kind)) {
+        throw new LibraryValidationError("kind", "Feed kind must be 'rss' or 'arxiv'.");
+      }
+      const normalizedUrl = normalizeLibraryUrl(input.url);
+      if (!normalizedUrl) {
+        throw new LibraryValidationError("url", "Feed URL must be a valid http or https URL.");
+      }
+      const tags = normalizeLibraryTags(input.tags);
+      const intervalMinutes = Math.floor(
+        input.intervalMinutes ?? LIBRARY_FEED_DEFAULT_INTERVAL_MINUTES,
+      );
+      if (
+        !Number.isInteger(intervalMinutes) ||
+        intervalMinutes < LIBRARY_FEED_MIN_INTERVAL_MINUTES ||
+        intervalMinutes > LIBRARY_FEED_MAX_INTERVAL_MINUTES
+      ) {
+        throw new LibraryValidationError(
+          "intervalMinutes",
+          `intervalMinutes must be between ${LIBRARY_FEED_MIN_INTERVAL_MINUTES} and ${LIBRARY_FEED_MAX_INTERVAL_MINUTES}.`,
+        );
+      }
+      const maxItemsPerRun = Math.floor(input.maxItemsPerRun ?? LIBRARY_FEED_DEFAULT_ITEMS_PER_RUN);
+      if (
+        !Number.isInteger(maxItemsPerRun) ||
+        maxItemsPerRun < 1 ||
+        maxItemsPerRun > LIBRARY_FEED_MAX_ITEMS_PER_RUN
+      ) {
+        throw new LibraryValidationError(
+          "maxItemsPerRun",
+          `maxItemsPerRun must be between 1 and ${LIBRARY_FEED_MAX_ITEMS_PER_RUN}.`,
+        );
+      }
+      const autoSummarize = input.autoSummarize === true;
+      const aiInstanceId = input.aiInstanceId?.trim() || null;
+      const aiModel = input.aiModel?.trim() || null;
+      if (autoSummarize && (!aiInstanceId || !aiModel)) {
+        throw new LibraryValidationError(
+          "aiModel",
+          "Explicit aiInstanceId and aiModel are required when autoSummarize is enabled.",
+        );
+      }
+      const dailyAiBudget = Math.floor(input.dailyAiBudget ?? LIBRARY_FEED_DEFAULT_DAILY_AI_BUDGET);
+      if (
+        !Number.isInteger(dailyAiBudget) ||
+        dailyAiBudget < 0 ||
+        dailyAiBudget > LIBRARY_FEED_MAX_DAILY_AI_BUDGET
+      ) {
+        throw new LibraryValidationError(
+          "dailyAiBudget",
+          `dailyAiBudget must be between 0 and ${LIBRARY_FEED_MAX_DAILY_AI_BUDGET}.`,
+        );
+      }
+
+      const timestamp = now().toISOString();
+      return runInImmediateTransaction(db, () => {
+        const existing = input.id?.trim() ? getFeed(input.id.trim()) : null;
+        const id = existing ? existing.id : input.id?.trim() || NodeCrypto.randomUUID();
+        const enabled = input.enabled ?? existing?.enabled ?? true;
+
+        const duplicateUrl = db
+          .prepare("SELECT id FROM library_feeds WHERE url = ? AND id != ?")
+          .get(normalizedUrl, id) as { readonly id: string } | undefined;
+        if (duplicateUrl) {
+          throw new LibraryDuplicateUrlError(normalizedUrl, duplicateUrl.id);
+        }
+
+        if (existing) {
+          db.prepare(
+            `UPDATE library_feeds
+             SET name = ?, kind = ?, url = ?, tags_json = ?, enabled = ?,
+                 interval_minutes = ?, max_items_per_run = ?, auto_summarize = ?,
+                 ai_instance_id = ?, ai_model = ?, daily_ai_budget = ?, updated_at = ?
+             WHERE id = ?`,
+          ).run(
+            name,
+            input.kind,
+            normalizedUrl,
+            JSON.stringify(tags),
+            enabled ? 1 : 0,
+            intervalMinutes,
+            maxItemsPerRun,
+            autoSummarize ? 1 : 0,
+            aiInstanceId,
+            aiModel,
+            dailyAiBudget,
+            timestamp,
+            id,
+          );
+        } else {
+          db.prepare(
+            `INSERT INTO library_feeds (
+               id, name, kind, url, tags_json, enabled, interval_minutes, max_items_per_run,
+               auto_summarize, ai_instance_id, ai_model, daily_ai_budget,
+               last_run_at, last_status, last_error, last_imported_count, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)`,
+          ).run(
+            id,
+            name,
+            input.kind,
+            normalizedUrl,
+            JSON.stringify(tags),
+            enabled ? 1 : 0,
+            intervalMinutes,
+            maxItemsPerRun,
+            autoSummarize ? 1 : 0,
+            aiInstanceId,
+            aiModel,
+            dailyAiBudget,
+            timestamp,
+            timestamp,
+          );
+        }
+
+        return getFeed(id)!;
+      });
+    };
+
+    const setFeedEnabled = (id: string, enabled: boolean): LibraryFeed => {
+      const existing = getFeed(id);
+      if (!existing) {
+        throw new LibraryNotFoundError(id);
+      }
+      const timestamp = now().toISOString();
+      runInImmediateTransaction(db, () => {
+        db.prepare(
+          `UPDATE library_feeds
+           SET enabled = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(enabled ? 1 : 0, timestamp, existing.id);
+      });
+      return getFeed(existing.id)!;
+    };
+
+    const deleteFeed = (id: string): boolean => {
+      const trimmed = id.trim();
+      if (!trimmed) return false;
+      return runInImmediateTransaction(db, () => {
+        const result = db.prepare("DELETE FROM library_feeds WHERE id = ?").run(trimmed);
+        return Number(result.changes) > 0;
+      });
+    };
+
+    const hasFeedSeenItem = (
+      feedId: string,
+      externalId: string,
+      normalizedUrl: string | null,
+    ): boolean => {
+      const byExternalId = db
+        .prepare("SELECT 1 FROM library_feed_seen WHERE feed_id = ? AND external_id = ?")
+        .get(feedId, externalId);
+      if (byExternalId) return true;
+
+      if (normalizedUrl) {
+        const bySeenUrl = db
+          .prepare("SELECT 1 FROM library_feed_seen WHERE feed_id = ? AND normalized_url = ?")
+          .get(feedId, normalizedUrl);
+        if (bySeenUrl) return true;
+
+        const existingEntry = selectEntryIdByUrlStmt.get(normalizedUrl) as
+          | { readonly id: string }
+          | undefined;
+        if (existingEntry) return true;
+      }
+      return false;
+    };
+
+    const markFeedItemSeen = (
+      feedId: string,
+      externalId: string,
+      normalizedUrl: string | null,
+      entryId: string | null,
+    ): void => {
+      const timestamp = now().toISOString();
+      runInImmediateTransaction(db, () => {
+        db.prepare(
+          `INSERT INTO library_feed_seen (feed_id, external_id, normalized_url, entry_id, seen_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(feed_id, external_id) DO UPDATE SET
+             normalized_url = COALESCE(excluded.normalized_url, library_feed_seen.normalized_url),
+             entry_id = COALESCE(excluded.entry_id, library_feed_seen.entry_id),
+             seen_at = excluded.seen_at`,
+        ).run(feedId, externalId.slice(0, 512), normalizedUrl, entryId, timestamp);
+      });
+    };
+
+    const ingestFeedItem = (input: IngestLibraryFeedItemInput): IngestLibraryFeedItemResult => {
+      const title = normalizeLibraryTitle(input.title);
+      const normalizedUrl =
+        input.url !== null && input.url.trim().length > 0 ? normalizeLibraryUrl(input.url) : null;
+      if (input.url !== null && input.url.trim().length > 0 && normalizedUrl === null) {
+        throw new LibraryValidationError("url", "Feed item URL is invalid.");
+      }
+      const kind: LibraryEntryKind = normalizedUrl !== null ? "web" : "note";
+      const body = normalizeLibraryBody(input.body);
+      const tags = normalizeLibraryTags(input.tags);
+      const externalId = input.externalId.trim().slice(0, 512);
+      if (!externalId) {
+        throw new LibraryValidationError("externalId", "Feed item externalId must not be empty.");
+      }
+
+      const timestamp = now().toISOString();
+      const upsertSeenStmt = db.prepare(
+        `INSERT INTO library_feed_seen (feed_id, external_id, normalized_url, entry_id, seen_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(feed_id, external_id) DO UPDATE SET
+           normalized_url = COALESCE(excluded.normalized_url, library_feed_seen.normalized_url),
+           entry_id = COALESCE(excluded.entry_id, library_feed_seen.entry_id),
+           seen_at = excluded.seen_at`,
+      );
+
+      return runInImmediateTransaction(db, (): IngestLibraryFeedItemResult => {
+        const feedRow = db
+          .prepare("SELECT enabled FROM library_feeds WHERE id = ?")
+          .get(input.feedId) as { readonly enabled: number } | undefined;
+        if (!feedRow || feedRow.enabled === 0) {
+          return { status: "paused_or_missing" };
+        }
+
+        const seenByExternal = db
+          .prepare("SELECT entry_id FROM library_feed_seen WHERE feed_id = ? AND external_id = ?")
+          .get(input.feedId, externalId) as { readonly entry_id: string | null } | undefined;
+        if (seenByExternal) {
+          return { status: "deduplicated", existingEntryId: seenByExternal.entry_id };
+        }
+
+        if (normalizedUrl !== null) {
+          const seenByUrl = db
+            .prepare(
+              "SELECT entry_id FROM library_feed_seen WHERE feed_id = ? AND normalized_url = ?",
+            )
+            .get(input.feedId, normalizedUrl) as { readonly entry_id: string | null } | undefined;
+          if (seenByUrl) {
+            upsertSeenStmt.run(
+              input.feedId,
+              externalId,
+              normalizedUrl,
+              seenByUrl.entry_id,
+              timestamp,
+            );
+            return { status: "deduplicated", existingEntryId: seenByUrl.entry_id };
+          }
+
+          const existingEntry = selectEntryIdByUrlStmt.get(normalizedUrl) as
+            | { readonly id: string }
+            | undefined;
+          if (existingEntry) {
+            upsertSeenStmt.run(
+              input.feedId,
+              externalId,
+              normalizedUrl,
+              existingEntry.id,
+              timestamp,
+            );
+            return { status: "deduplicated", existingEntryId: existingEntry.id };
+          }
+        }
+
+        const newId = NodeCrypto.randomUUID();
+        insertEntryStmt.run(
+          newId,
+          kind,
+          title,
+          normalizedUrl,
+          body,
+          "",
+          JSON.stringify(tags),
+          null,
+          null,
+          0,
+          timestamp,
+          timestamp,
+        );
+        upsertSeenStmt.run(input.feedId, externalId, normalizedUrl, newId, timestamp);
+        const created = selectEntryByIdStmt.get(newId) as EntryRow | undefined;
+        if (!created) {
+          throw new LibraryNotFoundError(newId);
+        }
+        return { status: "imported", entry: rowToEntry(created) };
+      });
+    };
+
+    const recordFeedRun = (input: {
+      readonly feedId: string;
+      readonly status: string;
+      readonly error: string | null;
+      readonly importedCount: number;
+    }): LibraryFeed => {
+      const existing = getFeed(input.feedId);
+      if (!existing) {
+        throw new LibraryNotFoundError(input.feedId);
+      }
+      const timestamp = now().toISOString();
+      runInImmediateTransaction(db, () => {
+        db.prepare(
+          `UPDATE library_feeds
+           SET last_run_at = ?, last_status = ?, last_error = ?, last_imported_count = ?, updated_at = ?
+           WHERE id = ?`,
+        ).run(
+          timestamp,
+          input.status.slice(0, 64),
+          input.error ? input.error.slice(0, 400) : null,
+          Math.max(0, Math.floor(input.importedCount)),
+          timestamp,
+          existing.id,
+        );
+      });
+      return getFeed(existing.id)!;
+    };
+
+    const resolveUsageDate = (usageDate?: string): string => {
+      const trimmed = usageDate?.trim();
+      if (trimmed && /^\d{4}-\d{2}-\d{2}$/u.test(trimmed)) return trimmed;
+      return now().toISOString().slice(0, 10);
+    };
+
+    const getDailyAiUsageCount = (usageDate?: string): number => {
+      const date = resolveUsageDate(usageDate);
+      const row = db
+        .prepare("SELECT count FROM library_ai_daily_usage WHERE usage_date = ?")
+        .get(date) as { readonly count: number } | undefined;
+      return Number(row?.count ?? 0);
+    };
+
+    const consumeDailyAiBudget = (
+      limit: number,
+      usageDate?: string,
+      feedId?: string,
+    ): LibraryDailyAiBudgetAttempt => {
+      const date = resolveUsageDate(usageDate);
+      const clampedLimit = Math.max(0, Math.floor(limit));
+      const timestamp = now().toISOString();
+      return runInImmediateTransaction(db, () => {
+        const row = db
+          .prepare("SELECT count FROM library_ai_daily_usage WHERE usage_date = ?")
+          .get(date) as { readonly count: number } | undefined;
+        const current = Number(row?.count ?? 0);
+        if (feedId !== undefined) {
+          const feedRow = db
+            .prepare("SELECT enabled FROM library_feeds WHERE id = ?")
+            .get(feedId) as { readonly enabled: number } | undefined;
+          if (!feedRow || feedRow.enabled === 0) {
+            return { allowed: false, usedCount: current, usageDate: date };
+          }
+        }
+        if (current >= clampedLimit) {
+          return { allowed: false, usedCount: current, usageDate: date };
+        }
+        const nextCount = current + 1;
+        db.prepare(
+          `INSERT INTO library_ai_daily_usage (usage_date, count, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(usage_date) DO UPDATE SET
+             count = excluded.count,
+             updated_at = excluded.updated_at`,
+        ).run(date, nextCount, timestamp);
+        return { allowed: true, usedCount: nextCount, usageDate: date };
+      });
+    };
+
     const rebuildSearchIndex = (): void => {
       if (!ftsEnabled) return;
       runInImmediateTransaction(db, () => {
@@ -1715,6 +2279,17 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       setReadingPreference,
       getReadingNotesForMcp,
       appendNoteIdempotent,
+      listFeeds,
+      getFeed,
+      upsertFeed,
+      setFeedEnabled,
+      deleteFeed,
+      hasFeedSeenItem,
+      markFeedItemSeen,
+      ingestFeedItem,
+      recordFeedRun,
+      getDailyAiUsageCount,
+      consumeDailyAiBudget,
     };
   } catch (error) {
     if (!closed) {

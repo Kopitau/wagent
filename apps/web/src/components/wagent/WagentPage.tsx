@@ -204,19 +204,24 @@ function WagentSettingsDialog(props: {
   readonly onSave: (input: WagentUpdateConfigInput) => Promise<void>;
 }) {
   const gt = useGT();
-  const [workspace, setWorkspace] = useState(props.config.workspace);
-  const [agentDir, setAgentDir] = useState(props.config.agentDir);
-  const [kbDir, setKbDir] = useState(props.config.kbDir);
-  const [kbUrl, setKbUrl] = useState(props.config.kbUrl);
-  const [provider, setProvider] = useState(props.config.model.provider);
-  const [modelId, setModelId] = useState(props.config.model.id);
-  const [thinking, setThinking] = useState<WagentThinkingLevel>(props.config.model.thinking);
+  const [initialConfig] = useState<WagentConfigView>(() => ({
+    ...props.config,
+    model: { ...props.config.model },
+    allowedUserIds: [...props.config.allowedUserIds],
+  }));
+  const [workspace, setWorkspace] = useState(initialConfig.workspace);
+  const [agentDir, setAgentDir] = useState(initialConfig.agentDir);
+  const [kbDir, setKbDir] = useState(initialConfig.kbDir);
+  const [kbUrl, setKbUrl] = useState(initialConfig.kbUrl);
+  const [provider, setProvider] = useState(initialConfig.model.provider);
+  const [modelId, setModelId] = useState(initialConfig.model.id);
+  const [thinking, setThinking] = useState<WagentThinkingLevel>(initialConfig.model.thinking);
   const [confirmTimeoutSec, setConfirmTimeoutSec] = useState(
-    String(props.config.confirmTimeoutSec),
+    String(initialConfig.confirmTimeoutSec),
   );
-  const [proxy, setProxy] = useState(props.config.proxy);
-  const [telegramEnabled, setTelegramEnabled] = useState(props.config.telegramEnabled);
-  const [allowedUsersText, setAllowedUsersText] = useState(props.config.allowedUserIds.join(", "));
+  const [proxy, setProxy] = useState(initialConfig.proxy);
+  const [telegramEnabled, setTelegramEnabled] = useState(initialConfig.telegramEnabled);
+  const [allowedUsersText, setAllowedUsersText] = useState(initialConfig.allowedUserIds.join(", "));
 
   const [telegramBotToken, setTelegramBotToken] = useState("");
   const [clearTelegramBotToken, setClearTelegramBotToken] = useState(false);
@@ -243,20 +248,44 @@ function WagentSettingsDialog(props: {
     }
 
     setValidationError(null);
+    const trimmedWorkspace = workspace.trim();
+    const trimmedAgentDir = agentDir.trim();
+    const trimmedKbDir = kbDir.trim();
+    const trimmedKbUrl = kbUrl.trim();
+    const trimmedWkbToken = wkbToken.trim();
+    const kbUrlChanged = trimmedKbUrl !== initialConfig.kbUrl;
+    const wkbTokenChanged = clearWkbToken || trimmedWkbToken.length > 0;
+    const trimmedProvider = provider.trim();
+    const trimmedModelId = modelId.trim();
+    const trimmedProxy = proxy.trim();
+    const providerChanged = trimmedProvider !== initialConfig.model.provider;
+    const modelIdChanged = trimmedModelId !== initialConfig.model.id;
+    const thinkingChanged = thinking !== initialConfig.model.thinking;
+    const usersChanged =
+      parsedUsers.length !== initialConfig.allowedUserIds.length ||
+      parsedUsers.some((id, idx) => id !== initialConfig.allowedUserIds[idx]);
+
     const payload: WagentUpdateConfigInput = {
-      workspace: workspace.trim(),
-      agentDir: agentDir.trim(),
-      kbDir: kbDir.trim(),
-      kbUrl: kbUrl.trim(),
-      model: {
-        provider: provider.trim(),
-        id: modelId.trim(),
-        thinking,
-      },
-      confirmTimeoutSec: parsedTimeout,
-      proxy: proxy.trim(),
-      telegramEnabled,
-      allowedUserIds: parsedUsers,
+      ...(trimmedWorkspace !== initialConfig.workspace ? { workspace: trimmedWorkspace } : {}),
+      ...(trimmedAgentDir !== initialConfig.agentDir ? { agentDir: trimmedAgentDir } : {}),
+      ...(trimmedKbDir !== initialConfig.kbDir ? { kbDir: trimmedKbDir } : {}),
+      ...(kbUrlChanged ? { kbUrl: trimmedKbUrl } : {}),
+      ...(kbUrlChanged || wkbTokenChanged ? { expectedKbUrl: initialConfig.kbUrl } : {}),
+      ...(providerChanged || modelIdChanged || thinkingChanged
+        ? {
+            model: {
+              ...(providerChanged ? { provider: trimmedProvider } : {}),
+              ...(modelIdChanged ? { id: trimmedModelId } : {}),
+              ...(thinkingChanged ? { thinking } : {}),
+            },
+          }
+        : {}),
+      ...(parsedTimeout !== initialConfig.confirmTimeoutSec
+        ? { confirmTimeoutSec: parsedTimeout }
+        : {}),
+      ...(trimmedProxy !== initialConfig.proxy ? { proxy: trimmedProxy } : {}),
+      ...(telegramEnabled !== initialConfig.telegramEnabled ? { telegramEnabled } : {}),
+      ...(usersChanged ? { allowedUserIds: parsedUsers } : {}),
       ...(clearTelegramBotToken
         ? { telegramBotToken: null }
         : telegramBotToken.trim()
@@ -269,8 +298,8 @@ function WagentSettingsDialog(props: {
           : {}),
       ...(clearWkbToken
         ? { wkbToken: null }
-        : wkbToken.trim()
-          ? { wkbToken: wkbToken.trim() }
+        : trimmedWkbToken
+          ? { wkbToken: trimmedWkbToken }
           : {}),
     };
     await props.onSave(payload);
@@ -563,8 +592,10 @@ export function WagentPage() {
   const { environments } = useEnvironments();
 
   const [selectedEnvId, setSelectedEnvId] = useState<EnvironmentId | null>(null);
-  const [promptText, setPromptText] = useState("");
-  const [convertSource, setConvertSource] = useState("");
+  const [promptsByEnv, setPromptsByEnv] = useState<Readonly<Record<string, string>>>({});
+  const [convertSourcesByEnv, setConvertSourcesByEnv] = useState<Readonly<Record<string, string>>>(
+    {},
+  );
   const [convertPdf, setConvertPdf] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
@@ -584,15 +615,45 @@ export function WagentPage() {
 
   const activeEnvironment =
     environments.find((env) => env.environmentId === activeEnvironmentId) ?? null;
+  const isConnected = activeEnvironment?.connection.phase === "connected";
   const supportsWagent = activeEnvironment?.serverConfig?.environment.capabilities.wagent === true;
+  const promptText = activeEnvironmentId !== null ? (promptsByEnv[activeEnvironmentId] ?? "") : "";
+  const convertSource =
+    activeEnvironmentId !== null ? (convertSourcesByEnv[activeEnvironmentId] ?? "") : "";
+
+  const updateActivePrompt = (nextPrompt: string) => {
+    if (activeEnvironmentId === null) return;
+    if (selectedEnvId === null) {
+      setSelectedEnvId(activeEnvironmentId);
+    }
+    setPromptsByEnv((prev) => ({
+      ...prev,
+      [activeEnvironmentId]: nextPrompt,
+    }));
+  };
+
+  const updateActiveConvertSource = (nextSource: string) => {
+    if (activeEnvironmentId === null) return;
+    if (selectedEnvId === null) {
+      setSelectedEnvId(activeEnvironmentId);
+    }
+    setConvertSourcesByEnv((prev) => ({
+      ...prev,
+      [activeEnvironmentId]: nextSource,
+    }));
+  };
 
   const canRead = useAtomValue(wagentEnvironment.readPermissionAtom(activeEnvironmentId));
-  const canOperate = useAtomValue(wagentEnvironment.send.permissionAtom(activeEnvironmentId));
-  const canConfigure = useAtomValue(
+  const hasOperatePermission = useAtomValue(
+    wagentEnvironment.send.permissionAtom(activeEnvironmentId),
+  );
+  const hasConfigurePermission = useAtomValue(
     wagentEnvironment.updateConfig.permissionAtom(activeEnvironmentId),
   );
+  const canOperate = isConnected && hasOperatePermission;
+  const canConfigure = isConnected && hasConfigurePermission;
 
-  const queryEnabled = activeEnvironmentId !== null && supportsWagent && canRead;
+  const queryEnabled = activeEnvironmentId !== null && isConnected && supportsWagent && canRead;
   const liveQuery = useWagentLiveStatus(activeEnvironmentId, queryEnabled);
   const statusQuery = useWagentStatus(activeEnvironmentId, queryEnabled);
   const status: WagentStatusResult | null = liveQuery.data ?? statusQuery.data ?? null;
@@ -618,16 +679,21 @@ export function WagentPage() {
 
   const handleSend = async () => {
     if (!activeEnvironmentId || !canOperate) return;
-    const trimmed = promptText.trim();
+    const targetEnvironmentId = activeEnvironmentId;
+    const trimmed = (promptsByEnv[targetEnvironmentId] ?? "").trim();
     if (!trimmed) return;
+    setSelectedEnvId(targetEnvironmentId);
     setSending(true);
     const result = await sendCommand({
-      environmentId: activeEnvironmentId,
+      environmentId: targetEnvironmentId,
       input: { prompt: trimmed },
     });
     setSending(false);
     if (result._tag === "Success") {
-      setPromptText("");
+      setPromptsByEnv((prev) => ({
+        ...prev,
+        [targetEnvironmentId]: "",
+      }));
       toastManager.add({
         type: "success",
         title: gt("Task dispatched to Wagent"),
@@ -708,16 +774,21 @@ export function WagentPage() {
 
   const handleConvertToDoc = async () => {
     if (!activeEnvironmentId || !canOperate) return;
-    const trimmed = convertSource.trim();
+    const targetEnvironmentId = activeEnvironmentId;
+    const trimmed = (convertSourcesByEnv[targetEnvironmentId] ?? "").trim();
     if (!trimmed) return;
+    setSelectedEnvId(targetEnvironmentId);
     setConverting(true);
     const result = await convertToDocCommand({
-      environmentId: activeEnvironmentId,
+      environmentId: targetEnvironmentId,
       input: { source: trimmed, pdf: convertPdf },
     });
     setConverting(false);
     if (result._tag === "Success") {
-      setConvertSource("");
+      setConvertSourcesByEnv((prev) => ({
+        ...prev,
+        [targetEnvironmentId]: "",
+      }));
       toastManager.add({
         type: "success",
         title: gt("Exported to Wagent workspace"),
@@ -757,9 +828,10 @@ export function WagentPage() {
 
   const handleSaveSettings = async (input: WagentUpdateConfigInput) => {
     if (!activeEnvironmentId || !canConfigure) return;
+    const targetEnvironmentId = activeEnvironmentId;
     setSavingSettings(true);
     const result = await updateConfigCommand({
-      environmentId: activeEnvironmentId,
+      environmentId: targetEnvironmentId,
       input,
     });
     setSavingSettings(false);
@@ -805,7 +877,10 @@ export function WagentPage() {
               <Select
                 value={activeEnvironmentId ?? undefined}
                 onValueChange={(value) => {
-                  if (value) setSelectedEnvId(value as EnvironmentId);
+                  if (value) {
+                    setSettingsOpen(false);
+                    setSelectedEnvId(value as EnvironmentId);
+                  }
                 }}
               >
                 <SelectTrigger size="sm" data-testid="wagent-env-select">
@@ -846,7 +921,12 @@ export function WagentPage() {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => setSettingsOpen(true)}
+                onClick={() => {
+                  if (selectedEnvId === null && activeEnvironmentId !== null) {
+                    setSelectedEnvId(activeEnvironmentId);
+                  }
+                  setSettingsOpen(true);
+                }}
                 data-testid="wagent-open-settings-btn"
               >
                 <SettingsIcon className="size-3.5" />
@@ -858,7 +938,7 @@ export function WagentPage() {
 
         <ScrollArea className="min-h-0 flex-1">
           <div className="mx-auto max-w-6xl space-y-5 p-4 sm:p-6">
-            {activeEnvironment === null ? (
+            {activeEnvironment === null || !isConnected ? (
               <Empty>
                 <EmptyHeader>
                   <EmptyMedia variant="icon">
@@ -982,7 +1062,7 @@ export function WagentPage() {
                         )}
                         value={promptText}
                         disabled={!canOperate || sending}
-                        onChange={(event) => setPromptText(event.target.value)}
+                        onChange={(event) => updateActivePrompt(event.target.value)}
                         onKeyDown={(event) => {
                           if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                             event.preventDefault();
@@ -1110,7 +1190,7 @@ export function WagentPage() {
                         placeholder={gt("https://... or ~/Wagent/inbox/file")}
                         value={convertSource}
                         disabled={!canOperate || converting}
-                        onChange={(event) => setConvertSource(event.target.value)}
+                        onChange={(event) => updateActiveConvertSource(event.target.value)}
                         data-testid="wagent-convert-input"
                       />
                       <div className="flex items-center justify-between gap-2">
@@ -1205,6 +1285,7 @@ export function WagentPage() {
 
                 {settingsOpen ? (
                   <WagentSettingsDialog
+                    key={activeEnvironmentId ?? "none"}
                     open={settingsOpen}
                     onOpenChange={setSettingsOpen}
                     config={status.config}

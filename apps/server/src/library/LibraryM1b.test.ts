@@ -7,6 +7,7 @@ import {
   AuthOrchestrationReadScope,
   AuthSessionId,
   EnvironmentId,
+  LIBRARY_UPLOAD_METADATA_HEADER,
   LIBRARY_UPLOAD_PDF_PATH,
   libraryItemPdfPath,
 } from "@t3tools/contracts";
@@ -20,6 +21,7 @@ import { HttpBody, HttpClient, HttpClientRequest, HttpRouter } from "effect/http
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { browserApiCorsAllowedHeaders } from "../httpCors.ts";
 import * as WkbBridgeService from "../wkb/WkbBridgeService.ts";
 import * as LibraryHttp from "./http.ts";
 import * as LibraryService from "./LibraryService.ts";
@@ -278,7 +280,37 @@ it.effect(
         expect(missingPdfRes.status).toBe(404);
         expect(missingPdfRes.headers["x-library-blob-missing"]).toBe("1");
 
-        // 9. SSRF loopback URL is hard-rejected even when allowFallback is true
+        // 9. CORS allowed headers include x-t3-library-metadata and framed >20k-char note upload succeeds
+        expect(browserApiCorsAllowedHeaders).toContain(LIBRARY_UPLOAD_METADATA_HEADER);
+        const hugeNote = `Note:${"研究笔记".repeat(5_500)}`;
+        const metaBytes = new TextEncoder().encode(
+          JSON.stringify({
+            fileName: "framed.pdf",
+            title: "Framed Large Note PDF",
+            note: hugeNote,
+            tags: ["framed"],
+          }),
+        );
+        const framedPayload = new Uint8Array(4 + metaBytes.byteLength + pdfBytes.byteLength);
+        new DataView(framedPayload.buffer).setUint32(0, metaBytes.byteLength, false);
+        framedPayload.set(metaBytes, 4);
+        framedPayload.set(pdfBytes, 4 + metaBytes.byteLength);
+        const framedRes = yield* client.execute(
+          HttpClientRequest.post(LIBRARY_UPLOAD_PDF_PATH).pipe(
+            HttpClientRequest.setHeader("authorization", "Bearer op-token"),
+            HttpClientRequest.setHeader(LIBRARY_UPLOAD_METADATA_HEADER, "framed"),
+            HttpClientRequest.setBody(HttpBody.uint8Array(framedPayload, "application/pdf")),
+          ),
+        );
+        expect(framedRes.status).toBe(201);
+        const framedUploaded = (yield* framedRes.json) as {
+          readonly entry: { readonly title: string; readonly note: string; readonly body: string };
+        };
+        expect(framedUploaded.entry.title).toBe("Framed Large Note PDF");
+        expect(framedUploaded.entry.note).toBe(hugeNote);
+        expect(framedUploaded.entry.body).toContain("English Abstract");
+
+        // 10. SSRF loopback URL is hard-rejected even when allowFallback is true
         const ssrfError = yield* library
           .fetchUrl({ url: "http://127.0.0.1/admin", allowFallback: true })
           .pipe(Effect.flip);
@@ -345,7 +377,11 @@ fi
         };
 
         const libraryLayer = LibraryService.layer.pipe(
-          Layer.provide(WkbBridgeService.layer),
+          Layer.provide(
+            WkbBridgeService.makeLayer({
+              dnsResolver: async () => [{ address: "93.184.216.34", family: 4 }],
+            }),
+          ),
           Layer.provide(ServerConfig.layerTest(tempDir, tempDir)),
           Layer.provide(
             Layer.mock(ServerEnvironment.ServerEnvironment)({
@@ -360,6 +396,7 @@ fi
           const status = yield* library.wkbStatus();
           expect(status).toEqual({
             available: true,
+            syncAvailable: true,
             mode: "dual",
             remoteUrl: "https://kb.example.invalid/kb/mcp",
           });

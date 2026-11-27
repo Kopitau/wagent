@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Pure non-Effect SSRF-protected fetcher requires node:dns, node:http, node:https, and node:net for DNS-pinned sockets.
+// @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Pure non-Effect SSRF-protected fetcher requires node:dns, node:http, node:https, node:net, and hard deadline timers for DNS-pinned sockets.
 import * as NodeDns from "node:dns";
 import * as NodeHttp from "node:http";
 import * as NodeHttps from "node:https";
@@ -83,7 +83,7 @@ export interface DnsLookupEntry {
 
 export type DnsResolver = (hostname: string) => Promise<ReadonlyArray<DnsLookupEntry>>;
 
-const defaultDnsResolver: DnsResolver = (hostname) =>
+export const defaultDnsResolver: DnsResolver = (hostname) =>
   new Promise((resolve, reject) => {
     NodeDns.lookup(hostname, { all: true }, (error, addresses) => {
       if (error) {
@@ -131,7 +131,13 @@ export interface FetchedWebArticle {
   readonly body: string;
 }
 
-async function resolveAndPinPublicAddress(
+export interface FetchedPublicTextDocument {
+  readonly finalUrl: string;
+  readonly contentType: string;
+  readonly text: string;
+}
+
+export async function resolveAndPinPublicAddress(
   url: URL,
   dnsResolver: DnsResolver,
 ): Promise<DnsLookupEntry> {
@@ -171,6 +177,7 @@ function performPinnedHttpHop(input: {
       reject(new Error("Web fetch aborted."));
       return;
     }
+    let settled = false;
     const isHttps = input.url.protocol === "https:";
     const transport = isHttps ? NodeHttps : NodeHttp;
     const pinnedLookup: NodeNet.LookupFunction = (_hostname, options, callback) => {
@@ -181,6 +188,25 @@ function performPinnedHttpHop(input: {
         return;
       }
       callback(null, input.pinnedAddress.address, input.pinnedAddress.family);
+    };
+
+    const cleanup = () => {
+      clearTimeout(hardDeadlineTimer);
+      input.signal?.removeEventListener("abort", onAbort);
+    };
+
+    const settleResolve = (value: RawHttpHopResponse) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(value);
+    };
+
+    const settleReject = (err: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(err);
     };
 
     const req = transport.request(
@@ -201,10 +227,11 @@ function performPinnedHttpHop(input: {
       (res) => {
         const statusCode = res.statusCode ?? 0;
         if (statusCode >= 300 && statusCode < 400 && res.headers.location) {
-          res.resume();
-          resolve({
+          const redirectHeaders = { ...res.headers };
+          res.destroy();
+          settleResolve({
             statusCode,
-            headers: res.headers,
+            headers: redirectHeaders,
             body: Buffer.alloc(0),
           });
           return;
@@ -224,13 +251,10 @@ function performPinnedHttpHop(input: {
 
         const chunks: Buffer[] = [];
         let totalBytes = 0;
-        let finished = false;
 
         const fail = (err: Error) => {
-          if (finished) return;
-          finished = true;
           req.destroy();
-          reject(err);
+          settleReject(err);
         };
 
         stream.on("data", (chunk: Buffer) => {
@@ -243,9 +267,7 @@ function performPinnedHttpHop(input: {
         });
         stream.on("error", (err) => fail(err));
         stream.on("end", () => {
-          if (finished) return;
-          finished = true;
-          resolve({
+          settleResolve({
             statusCode,
             headers: res.headers,
             body: Buffer.concat(chunks),
@@ -254,20 +276,30 @@ function performPinnedHttpHop(input: {
       },
     );
 
+    const hardDeadlineTimer = setTimeout(() => {
+      const err = new Error(`Web fetch timed out after ${input.timeoutMs}ms.`);
+      req.destroy(err);
+      settleReject(err);
+    }, input.timeoutMs);
+    hardDeadlineTimer.unref?.();
+
     const onAbort = () => {
-      req.destroy(new Error("Web fetch aborted."));
+      const err = new Error("Web fetch aborted.");
+      req.destroy(err);
+      settleReject(err);
     };
     input.signal?.addEventListener("abort", onAbort, { once: true });
 
     req.on("timeout", () => {
-      req.destroy(new Error(`Web fetch timed out after ${input.timeoutMs}ms.`));
+      const err = new Error(`Web fetch timed out after ${input.timeoutMs}ms.`);
+      req.destroy(err);
+      settleReject(err);
     });
     req.on("error", (err) => {
-      input.signal?.removeEventListener("abort", onAbort);
-      reject(err);
+      settleReject(err);
     });
     req.on("close", () => {
-      input.signal?.removeEventListener("abort", onAbort);
+      cleanup();
     });
     req.end();
   });
@@ -414,10 +446,10 @@ export function extractArticleFromHtml(
  * Throws `LibraryValidationError` for malformed/disallowed URLs and `LibrarySsrfRejectedError`
  * for any private/loopback/link-local/unresolvable host (including redirect targets).
  */
-export async function fetchWebArticle(
+export async function fetchPublicTextDocument(
   rawUrl: string,
   options: FetchWebArticleOptions = {},
-): Promise<FetchedWebArticle> {
+): Promise<FetchedPublicTextDocument> {
   const normalizedUrl = normalizeLibraryUrl(rawUrl);
   if (normalizedUrl === null) {
     throw new LibraryValidationError("url", "A valid http or https URL is required.");
@@ -428,14 +460,32 @@ export async function fetchWebArticle(
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const dnsResolver = options.dnsResolver ?? defaultDnsResolver;
   const requestHop = options.requestHop ?? performPinnedHttpHop;
+  const deadlineAt = performance.now() + timeoutMs;
 
   let currentUrl = new URL(normalizedUrl);
   for (let hop = 0; hop <= maxRedirects; hop += 1) {
-    const pinnedAddress = await resolveAndPinPublicAddress(currentUrl, dnsResolver);
+    const remainingBeforeDns = Math.ceil(deadlineAt - performance.now());
+    if (remainingBeforeDns <= 0) {
+      throw new Error(`Web fetch timed out after ${timeoutMs}ms.`);
+    }
+    const pinnedAddress = await Promise.race([
+      resolveAndPinPublicAddress(currentUrl, dnsResolver),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error(`Web fetch timed out after ${timeoutMs}ms.`)),
+          remainingBeforeDns,
+        );
+        timer.unref?.();
+      }),
+    ]);
+    const remainingMs = Math.ceil(deadlineAt - performance.now());
+    if (remainingMs <= 0) {
+      throw new Error(`Web fetch timed out after ${timeoutMs}ms.`);
+    }
     const response = await requestHop({
       url: currentUrl,
       pinnedAddress,
-      timeoutMs,
+      timeoutMs: remainingMs,
       maxBytes,
       signal: options.signal,
     });
@@ -466,47 +516,58 @@ export async function fetchWebArticle(
     const contentType = (
       Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : (contentTypeHeader ?? "")
     ).toLowerCase();
-    const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
-    const isPlainText =
-      contentType.includes("text/plain") ||
-      contentType.includes("text/markdown") ||
-      contentType === "";
-    if (!isHtml && !isPlainText) {
-      throw new Error(
-        `Unsupported content type for web article fetch: ${contentType || "unknown"}`,
-      );
-    }
 
-    const text = response.body.toString("utf8");
-    const finalUrl = currentUrl.toString();
-    const kind = inferWebEntryKind(finalUrl);
-
-    if (isPlainText && !isHtml) {
-      return {
-        finalUrl,
-        kind,
-        title: currentUrl.hostname,
-        body: text
-          .replace(/\u0000/gu, "")
-          .trim()
-          .slice(0, LIBRARY_MAX_BODY_CHARS),
-      };
-    }
-
-    const extracted = extractArticleFromHtml(text, finalUrl);
-    if (extracted.wechatBlocked) {
-      throw new Error("WeChat article requires interactive verification; saved link only.");
-    }
-    if (extracted.body.length === 0) {
-      throw new Error("Could not extract readable text from page.");
-    }
     return {
-      finalUrl,
-      kind,
-      title: extracted.title,
-      body: extracted.body,
+      finalUrl: currentUrl.toString(),
+      contentType,
+      text: response.body.toString("utf8"),
     };
   }
 
   throw new Error("Redirect loop aborted.");
+}
+
+export async function fetchWebArticle(
+  rawUrl: string,
+  options: FetchWebArticleOptions = {},
+): Promise<FetchedWebArticle> {
+  const { finalUrl, contentType, text } = await fetchPublicTextDocument(rawUrl, options);
+  const currentUrl = new URL(finalUrl);
+
+  const isHtml = contentType.includes("text/html") || contentType.includes("application/xhtml");
+  const isPlainText =
+    contentType.includes("text/plain") ||
+    contentType.includes("text/markdown") ||
+    contentType === "";
+  if (!isHtml && !isPlainText) {
+    throw new Error(`Unsupported content type for web article fetch: ${contentType || "unknown"}`);
+  }
+
+  const kind = inferWebEntryKind(finalUrl);
+
+  if (isPlainText && !isHtml) {
+    return {
+      finalUrl,
+      kind,
+      title: currentUrl.hostname,
+      body: text
+        .replace(/\u0000/gu, "")
+        .trim()
+        .slice(0, LIBRARY_MAX_BODY_CHARS),
+    };
+  }
+
+  const extracted = extractArticleFromHtml(text, finalUrl);
+  if (extracted.wechatBlocked) {
+    throw new Error("WeChat article requires interactive verification; saved link only.");
+  }
+  if (extracted.body.length === 0) {
+    throw new Error("Could not extract readable text from page.");
+  }
+  return {
+    finalUrl,
+    kind,
+    title: extracted.title,
+    body: extracted.body,
+  };
 }

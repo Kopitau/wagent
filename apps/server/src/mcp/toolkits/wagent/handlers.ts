@@ -33,7 +33,7 @@ export const layer = McpToolAccess.toLayer(
     const wagent = yield* WagentService.WagentService;
 
     return {
-      wagent_dispatch: McpToolAccess.writes((input) =>
+      wagent_dispatch: McpToolAccess.writesFullAccess("dispatch tasks to Wagent", (input) =>
         wagent
           .send(
             { prompt: input.prompt },
@@ -46,7 +46,7 @@ export const layer = McpToolAccess.toLayer(
           )
           .pipe(Effect.mapError(toMcpFailure)),
       ),
-      wagent_status: McpToolAccess.reads((input) =>
+      wagent_status: McpToolAccess.writes((input) =>
         wagent.status.pipe(
           Effect.map((current) => ({
             running: current.running,
@@ -67,13 +67,15 @@ export const layer = McpToolAccess.toLayer(
           .abort(input.runId === undefined ? {} : { runId: input.runId })
           .pipe(Effect.mapError(toMcpFailure)),
       ),
-      wagent_convert_to_doc: McpToolAccess.writes((input) =>
-        wagent
-          .convertToDoc({
-            source: input.source,
-            ...(input.pdf === undefined ? {} : { pdf: input.pdf }),
-          })
-          .pipe(Effect.mapError(toMcpFailure)),
+      wagent_convert_to_doc: McpToolAccess.writesFullAccess(
+        "convert external or local documents via Wagent",
+        (input) =>
+          wagent
+            .convertToDoc({
+              source: input.source,
+              ...(input.pdf === undefined ? {} : { pdf: input.pdf }),
+            })
+            .pipe(Effect.mapError(toMcpFailure)),
       ),
     };
   }),

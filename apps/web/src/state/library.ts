@@ -83,3 +83,11 @@ export function useLibraryImaStatus(environmentId: EnvironmentId | null, enabled
       : null,
   );
 }
+
+export function useLibraryFeeds(environmentId: EnvironmentId | null, enabled: boolean) {
+  return useEnvironmentQuery(
+    enabled && environmentId !== null
+      ? libraryEnvironment.listFeeds({ environmentId, input: undefined })
+      : null,
+  );
+}

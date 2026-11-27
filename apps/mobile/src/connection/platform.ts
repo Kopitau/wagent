@@ -19,6 +19,7 @@ import Constants from "expo-constants";
 import * as Network from "expo-network";
 import { AppState } from "react-native";
 
+import { resolveCloudPublicConfig } from "../features/cloud/publicConfig";
 import { authClientMetadata } from "../lib/authClientMetadata";
 import * as Runtime from "../lib/runtime";
 import * as MobileStorage from "../persistence/mobile-storage";
@@ -190,9 +191,16 @@ const layerCapabilities = Layer.effectContext(
           bearerToken: Effect.succeedNone,
         }),
       ),
-      // The relay device id already persists in secure storage; analytics only sends its hash.
+      // Default-off: never send analytics device or owner hashes unless telemetry is explicitly enabled.
       Context.add(ClientCapabilities.AnalyticsDevice, {
-        id: storage.loadOrCreateAgentAwarenessDeviceId.pipe(Effect.option),
+        id: Effect.suspend(() =>
+          resolveCloudPublicConfig().observability.enabled
+            ? storage.loadOrCreateAgentAwarenessDeviceId.pipe(
+                Effect.orElseSucceed(() => null),
+                Effect.map(Option.fromNullOr),
+              )
+            : Effect.succeedNone,
+        ),
       }),
       Context.add(
         ClientCapabilities.RelayDeviceIdentity,

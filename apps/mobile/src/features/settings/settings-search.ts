@@ -80,6 +80,23 @@ const SETTINGS_SEARCH_TERMS = {
     msg("recurring", { $context: "settings search keyword" }),
     msg("webhook", { $context: "settings search keyword" }),
   ],
+  SettingsLibrary: [
+    msg("library", { $context: "settings search keyword" }),
+    msg("papers", { $context: "settings search keyword" }),
+    msg("notes", { $context: "settings search keyword" }),
+    msg("research", { $context: "settings search keyword" }),
+    "pdf",
+    "deepread",
+    "arxiv",
+    "rss",
+  ],
+  SettingsWagent: [
+    "wagent",
+    msg("assistant", { $context: "settings search keyword" }),
+    "telegram",
+    msg("approval", { $context: "settings search keyword" }),
+    msg("exports", { $context: "settings search keyword" }),
+  ],
   SettingsProjectOverview: [
     msg("project", { $context: "settings search keyword" }),
     msg("overview", { $context: "settings search keyword" }),

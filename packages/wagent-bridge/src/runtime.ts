@@ -69,7 +69,12 @@ export interface WagentRuntimeOptions {
   readonly homeDir: string;
   readonly defaultKbDir?: string | undefined;
   readonly defaultAgentDir?: string | undefined;
+  readonly env?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly uvBinary?: string | undefined;
   readonly getSecrets: () => Promise<WagentSecrets>;
+  readonly resolveExecutionContext?:
+    | (() => Promise<{ readonly config: WagentStoredConfig; readonly secrets: WagentSecrets }>)
+    | undefined;
   readonly executor?: WagentExecutor | undefined;
   readonly approvalTimeoutOverrideMs?: number | undefined;
   readonly wkbExportImpl?: typeof runWkbExport | undefined;
@@ -90,8 +95,8 @@ function defaultConfig(options: {
     workspace: NodePath.join(options.homeDir, "Wagent"),
     model: {
       provider: "deepseek",
-      id: "deepseek-reasoner",
-      thinking: "high",
+      id: "deepseek-v4-pro",
+      thinking: "medium",
     },
     kbUrl: "",
     kbDir: options.defaultKbDir ?? NodePath.join(options.homeDir, "kb"),
@@ -100,7 +105,60 @@ function defaultConfig(options: {
     allowedUserIds: [],
     proxy: "",
     agentDir: options.defaultAgentDir ?? NodePath.join(options.homeDir, "Wagent-agent"),
+    explicitPaths: {
+      kbUrl: false,
+    },
   };
+}
+
+function realpathOrResolve(target: string): string {
+  try {
+    return NodeFS.realpathSync(target);
+  } catch {
+    return NodePath.resolve(target);
+  }
+}
+
+function canonicalizeTrustedAgentDir(
+  candidate: string,
+  homeDir: string,
+  defaultDir: string,
+): string | null {
+  const trimmed = candidate.trim();
+  if (!trimmed || !NodePath.isAbsolute(trimmed)) return null;
+  let realCandidate: string;
+  try {
+    realCandidate = NodeFS.realpathSync(trimmed);
+  } catch {
+    return null;
+  }
+  const allowed = [
+    realpathOrResolve(defaultDir),
+    realpathOrResolve(NodePath.join(homeDir, "Wagent", "agent")),
+    realpathOrResolve(NodePath.join(homeDir, "Wagent-agent")),
+  ];
+  return allowed.includes(realCandidate) ? realCandidate : null;
+}
+
+function canonicalizeTrustedKbDir(
+  candidate: string,
+  homeDir: string,
+  defaultDir: string,
+): string | null {
+  const trimmed = candidate.trim();
+  if (!trimmed || !NodePath.isAbsolute(trimmed)) return null;
+  let realCandidate: string;
+  try {
+    realCandidate = NodeFS.realpathSync(trimmed);
+  } catch {
+    return null;
+  }
+  const allowed = [
+    realpathOrResolve(defaultDir),
+    realpathOrResolve(NodePath.join(homeDir, "Wagent", "kb")),
+    realpathOrResolve(NodePath.join(homeDir, "kb")),
+  ];
+  return allowed.includes(realCandidate) ? realCandidate : null;
 }
 
 function classifyExportKind(filePath: string): WagentExportFile["kind"] {
@@ -109,6 +167,37 @@ function classifyExportKind(filePath: string): WagentExportFile["kind"] {
   if (ext === ".md" || ext === ".markdown") return "markdown";
   if (ext === ".txt") return "text";
   return "other";
+}
+
+export function sanitizeProxyUrl(raw: string): {
+  readonly redacted: string;
+  readonly hasCredentials: boolean;
+} {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { redacted: "", hasCredentials: false };
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (
+      parsed.protocol !== "http:" &&
+      parsed.protocol !== "https:" &&
+      parsed.protocol !== "socks5:"
+    ) {
+      throw new WagentBridgeError("validation", "proxy must use http, https, or socks5 protocol.");
+    }
+    const hasCredentials = parsed.username.length > 0 || parsed.password.length > 0;
+    parsed.username = "";
+    parsed.password = "";
+    const normalized =
+      parsed.pathname === "/" && !parsed.search && !parsed.hash && !trimmed.endsWith("/")
+        ? parsed.toString().replace(/\/$/u, "")
+        : parsed.toString();
+    return { redacted: normalized, hasCredentials };
+  } catch (error) {
+    if (error instanceof WagentBridgeError) throw error;
+    throw new WagentBridgeError("validation", "proxy must be a valid URL.");
+  }
 }
 
 function validateConfig(next: WagentStoredConfig): WagentStoredConfig {
@@ -143,42 +232,69 @@ function validateConfig(next: WagentStoredConfig): WagentStoredConfig {
   if (!next.model.provider.trim() || !next.model.id.trim()) {
     throw new WagentBridgeError("validation", "Model provider and id must be non-empty.");
   }
-  const kbUrl = next.kbUrl.trim();
-  if (kbUrl) {
+  const rawKbUrl = next.kbUrl.trim();
+  let kbUrl = "";
+  if (rawKbUrl) {
     let parsed: URL;
     try {
-      parsed = new URL(kbUrl);
+      parsed = new URL(rawKbUrl);
     } catch {
       throw new WagentBridgeError("validation", "kbUrl must be a valid HTTP/HTTPS URL.");
     }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new WagentBridgeError("validation", "kbUrl must use http or https protocol.");
     }
+    if (parsed.username !== "" || parsed.password !== "") {
+      throw new WagentBridgeError("validation", "kbUrl must not embed credentials.");
+    }
+    parsed.hash = "";
+    kbUrl = parsed.toString();
   }
   const allowedUserIds = [...new Set(next.allowedUserIds)].filter(
     (id) => Number.isSafeInteger(id) && id > 0,
   );
+  const sanitizedProxy = sanitizeProxyUrl(next.proxy).redacted;
+  const explicitPaths =
+    next.explicitPaths?.agentDir === true ||
+    next.explicitPaths?.kbDir === true ||
+    typeof next.explicitPaths?.kbUrl === "boolean"
+      ? {
+          ...(next.explicitPaths.agentDir === true ? { agentDir: true } : {}),
+          ...(next.explicitPaths.kbDir === true ? { kbDir: true } : {}),
+          ...(typeof next.explicitPaths.kbUrl === "boolean"
+            ? { kbUrl: next.explicitPaths.kbUrl }
+            : {}),
+        }
+      : undefined;
   return {
-    ...next,
     workspace,
     kbDir,
     agentDir,
     kbUrl,
-    proxy: next.proxy.trim(),
+    proxy: sanitizedProxy,
+    confirmTimeoutSec: next.confirmTimeoutSec,
+    telegramEnabled: Boolean(next.telegramEnabled),
     allowedUserIds,
     model: {
       provider: next.model.provider.trim(),
       id: next.model.id.trim(),
       thinking: next.model.thinking,
     },
+    ...(explicitPaths !== undefined ? { explicitPaths } : {}),
   };
 }
 
 export class WagentRuntime {
   readonly #stateDir: string;
+  readonly #homeDir: string;
   readonly #configPath: string;
   readonly #runsPath: string;
+  readonly #env: Readonly<Record<string, string | undefined>> | undefined;
+  readonly #uvBinary: string | undefined;
   readonly #getSecrets: () => Promise<WagentSecrets>;
+  readonly #resolveExecutionContext:
+    | (() => Promise<{ readonly config: WagentStoredConfig; readonly secrets: WagentSecrets }>)
+    | undefined;
   readonly #executor: WagentExecutor;
   readonly #approvalTimeoutOverrideMs: number | undefined;
   readonly #wkbExportImpl: typeof runWkbExport;
@@ -187,6 +303,9 @@ export class WagentRuntime {
   readonly #queue: Array<QueuedTask> = [];
 
   #config: WagentStoredConfig;
+  #persistedKbUrl: string | null = null;
+  #unmigratedLegacyProxyUrl: string | null = null;
+  #pendingConfigRewrite = false;
   #sessionId: string = NodeCrypto.randomUUID();
   #recentRuns: Array<WagentRunRecord> = [];
   #activeRun: WagentRunRecord | null = null;
@@ -196,9 +315,13 @@ export class WagentRuntime {
 
   constructor(options: WagentRuntimeOptions) {
     this.#stateDir = options.stateDir;
+    this.#homeDir = options.homeDir;
     this.#configPath = NodePath.join(options.stateDir, "config.json");
     this.#runsPath = NodePath.join(options.stateDir, "runs.json");
+    this.#env = options.env;
+    this.#uvBinary = options.uvBinary;
     this.#getSecrets = options.getSecrets;
+    this.#resolveExecutionContext = options.resolveExecutionContext;
     this.#executor = options.executor ?? createPiSubprocessExecutor();
     this.#approvalTimeoutOverrideMs = options.approvalTimeoutOverrideMs;
     this.#wkbExportImpl = options.wkbExportImpl ?? runWkbExport;
@@ -260,6 +383,103 @@ export class WagentRuntime {
     return NodePath.join(this.#config.workspace, "exports");
   }
 
+  get persistedKbUrl(): string | null {
+    return this.#persistedKbUrl;
+  }
+
+  get unmigratedLegacyProxyUrl(): string | null {
+    return this.#unmigratedLegacyProxyUrl;
+  }
+
+  consumeMigratedLegacyProxyUrl(): string | null {
+    return this.#unmigratedLegacyProxyUrl;
+  }
+
+  async confirmLegacyProxyMigrated(): Promise<void> {
+    await this.flushPendingConfigRewrite();
+  }
+
+  async flushPendingConfigRewrite(): Promise<void> {
+    if (this.#pendingConfigRewrite) {
+      await this.#writeConfigFile(this.#config);
+      this.#pendingConfigRewrite = false;
+    }
+    this.#unmigratedLegacyProxyUrl = null;
+  }
+
+  validatePatch(patch: WagentConfigPatch): WagentStoredConfig {
+    const normalizeComparableKbUrl = (raw: string): string => {
+      const trimmed = raw.trim();
+      if (!trimmed) return "";
+      try {
+        const parsed = new URL(trimmed);
+        parsed.hash = "";
+        return parsed.toString();
+      } catch {
+        return trimmed;
+      }
+    };
+    const agentDirChanged =
+      patch.agentDir !== undefined && patch.agentDir.trim() !== this.#config.agentDir;
+    const kbDirChanged = patch.kbDir !== undefined && patch.kbDir.trim() !== this.#config.kbDir;
+    const kbUrlChanged =
+      patch.kbUrl !== undefined &&
+      normalizeComparableKbUrl(patch.kbUrl) !== normalizeComparableKbUrl(this.#config.kbUrl);
+
+    const nextExplicitPaths = {
+      ...this.#config.explicitPaths,
+      ...(agentDirChanged ? { agentDir: true } : {}),
+      ...(kbDirChanged ? { kbDir: true } : {}),
+      ...(kbUrlChanged ? { kbUrl: true } : {}),
+    };
+    return validateConfig({
+      ...this.#config,
+      ...(patch.workspace !== undefined ? { workspace: patch.workspace } : {}),
+      ...(patch.kbUrl !== undefined ? { kbUrl: patch.kbUrl } : {}),
+      ...(patch.kbDir !== undefined ? { kbDir: patch.kbDir } : {}),
+      ...(patch.confirmTimeoutSec !== undefined
+        ? { confirmTimeoutSec: patch.confirmTimeoutSec }
+        : {}),
+      ...(patch.telegramEnabled !== undefined ? { telegramEnabled: patch.telegramEnabled } : {}),
+      ...(patch.allowedUserIds !== undefined ? { allowedUserIds: patch.allowedUserIds } : {}),
+      ...(patch.proxy !== undefined ? { proxy: patch.proxy } : {}),
+      ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
+      explicitPaths: nextExplicitPaths,
+      model: {
+        ...this.#config.model,
+        ...(patch.model?.provider !== undefined ? { provider: patch.model.provider } : {}),
+        ...(patch.model?.id !== undefined ? { id: patch.model.id } : {}),
+        ...(patch.model?.thinking !== undefined ? { thinking: patch.model.thinking } : {}),
+      },
+    });
+  }
+
+  async updateConfig(
+    patch: WagentConfigPatch,
+    options?: { readonly confirmLegacyProxyMigrated?: boolean | undefined },
+  ): Promise<WagentStoredConfig> {
+    if (
+      this.#unmigratedLegacyProxyUrl !== null &&
+      patch.proxy === undefined &&
+      options?.confirmLegacyProxyMigrated !== true
+    ) {
+      throw new WagentBridgeError(
+        "runtime_failed",
+        "Cannot overwrite Wagent config before legacy proxy credentials are migrated to SecretStore.",
+      );
+    }
+    const merged = this.validatePatch(patch);
+    await this.#writeConfigFile(merged);
+    this.#config = merged;
+    if (patch.proxy !== undefined || options?.confirmLegacyProxyMigrated === true) {
+      this.#unmigratedLegacyProxyUrl = null;
+    }
+    this.#pendingConfigRewrite = false;
+    this.#ensureWorkspaceDirsSync();
+    this.#emit({ type: "status_changed" });
+    return this.#config;
+  }
+
   subscribe(listener: (event: WagentBridgeEvent) => void): () => void {
     this.#listeners.add(listener);
     return () => {
@@ -281,33 +501,6 @@ export class WagentRuntime {
       agentDirReady: NodeFS.existsSync(NodePath.join(this.#config.agentDir, "package.json")),
       kbDirReady: NodeFS.existsSync(NodePath.join(this.#config.kbDir, "pyproject.toml")),
     };
-  }
-
-  async updateConfig(patch: WagentConfigPatch): Promise<WagentStoredConfig> {
-    const merged = validateConfig({
-      ...this.#config,
-      ...(patch.workspace !== undefined ? { workspace: patch.workspace } : {}),
-      ...(patch.kbUrl !== undefined ? { kbUrl: patch.kbUrl } : {}),
-      ...(patch.kbDir !== undefined ? { kbDir: patch.kbDir } : {}),
-      ...(patch.confirmTimeoutSec !== undefined
-        ? { confirmTimeoutSec: patch.confirmTimeoutSec }
-        : {}),
-      ...(patch.telegramEnabled !== undefined ? { telegramEnabled: patch.telegramEnabled } : {}),
-      ...(patch.allowedUserIds !== undefined ? { allowedUserIds: patch.allowedUserIds } : {}),
-      ...(patch.proxy !== undefined ? { proxy: patch.proxy } : {}),
-      ...(patch.agentDir !== undefined ? { agentDir: patch.agentDir } : {}),
-      model: {
-        ...this.#config.model,
-        ...(patch.model?.provider !== undefined ? { provider: patch.model.provider } : {}),
-        ...(patch.model?.id !== undefined ? { id: patch.model.id } : {}),
-        ...(patch.model?.thinking !== undefined ? { thinking: patch.model.thinking } : {}),
-      },
-    });
-    this.#config = merged;
-    await this.#persistConfig();
-    this.#ensureWorkspaceDirsSync();
-    this.#emit({ type: "status_changed" });
-    return this.#config;
   }
 
   enqueue(input: {
@@ -351,7 +544,7 @@ export class WagentRuntime {
       resolveFinished,
     });
     this.#emit({ type: "status_changed" });
-    void this.#drainQueue();
+    void this.#drainQueue().catch(() => undefined);
 
     return { run, completed };
   }
@@ -503,6 +696,8 @@ export class WagentRuntime {
       },
       {
         kbDir: this.#config.kbDir,
+        uvBinary: this.#uvBinary,
+        env: this.#env,
         allowedLocalRoots: [this.#config.workspace],
       },
     );
@@ -591,15 +786,24 @@ export class WagentRuntime {
     let failedMessage: string | null = null;
 
     try {
-      const secrets = await this.#getSecrets();
+      const { config: runConfig, secrets } = this.#resolveExecutionContext
+        ? await this.#resolveExecutionContext()
+        : {
+            config: this.#config,
+            secrets:
+              this.#unmigratedLegacyProxyUrl !== null
+                ? { proxyUrl: this.#unmigratedLegacyProxyUrl, ...(await this.#getSecrets()) }
+                : await this.#getSecrets(),
+          };
       await this.#executor.run({
         runId: startedRun.id,
         sessionId: this.#sessionId,
         prompt: startedRun.prompt,
         source: startedRun.source,
-        config: this.#config,
+        config: runConfig,
         secrets,
         stateDir: this.#stateDir,
+        uvBinary: this.#uvBinary,
         signal: abortController.signal,
         callbacks: {
           onText: (chunk) => {
@@ -628,8 +832,7 @@ export class WagentRuntime {
             });
           },
           requestApproval: async ({ reason, command }) => {
-            const timeoutMs =
-              this.#approvalTimeoutOverrideMs ?? this.#config.confirmTimeoutSec * 1000;
+            const timeoutMs = this.#approvalTimeoutOverrideMs ?? runConfig.confirmTimeoutSec * 1000;
             const { decision } = this.#approvalHub.requestApproval({
               runId: startedRun.id,
               reason,
@@ -669,7 +872,11 @@ export class WagentRuntime {
     this.#activeRun = null;
     this.#activeAbort = null;
     this.#recordFinishedRun(finishedRun);
-    await this.#persistRuns();
+    try {
+      await this.#persistRuns();
+    } catch {
+      // Best-effort persistence: disk errors must never hang callers awaiting task completion.
+    }
     this.#emit({ type: "run_finished", run: finishedRun });
     task.resolveFinished(finishedRun);
   }
@@ -718,15 +925,88 @@ export class WagentRuntime {
       const raw = JSON.parse(
         NodeFS.readFileSync(this.#configPath, "utf8"),
       ) as Partial<WagentStoredConfig>;
-      return validateConfig({
+
+      let needsRewrite = false;
+      let agentDir = raw.agentDir ?? fallback.agentDir;
+      if (typeof raw.agentDir === "string" && raw.explicitPaths?.agentDir !== true) {
+        const canonicalAgent = canonicalizeTrustedAgentDir(
+          raw.agentDir,
+          this.#homeDir,
+          fallback.agentDir,
+        );
+        if (canonicalAgent === null) {
+          agentDir = fallback.agentDir;
+          needsRewrite = true;
+        } else {
+          if (canonicalAgent !== raw.agentDir) needsRewrite = true;
+          agentDir = canonicalAgent;
+        }
+      }
+
+      let kbDir = raw.kbDir ?? fallback.kbDir;
+      if (typeof raw.kbDir === "string" && raw.explicitPaths?.kbDir !== true) {
+        const canonicalKb = canonicalizeTrustedKbDir(raw.kbDir, this.#homeDir, fallback.kbDir);
+        if (canonicalKb === null) {
+          kbDir = fallback.kbDir;
+          needsRewrite = true;
+        } else {
+          if (canonicalKb !== raw.kbDir) needsRewrite = true;
+          kbDir = canonicalKb;
+        }
+      }
+
+      if (typeof raw.proxy === "string" && raw.proxy.trim().length > 0) {
+        const parsedProxy = sanitizeProxyUrl(raw.proxy);
+        if (parsedProxy.hasCredentials) {
+          this.#unmigratedLegacyProxyUrl = raw.proxy.trim();
+          needsRewrite = true;
+        }
+      }
+
+      const hasExplicitKbUrl =
+        typeof raw.kbUrl === "string" &&
+        raw.kbUrl.trim().length > 0 &&
+        raw.explicitPaths?.kbUrl !== false;
+
+      const validated = validateConfig({
         ...fallback,
         ...raw,
+        agentDir,
+        kbDir,
+        explicitPaths: {
+          ...raw.explicitPaths,
+          kbUrl: hasExplicitKbUrl,
+        },
         model: {
           ...fallback.model,
           ...raw.model,
         },
       });
+
+      this.#persistedKbUrl =
+        hasExplicitKbUrl && validated.kbUrl.length > 0 ? validated.kbUrl : null;
+
+      if (needsRewrite) {
+        if (this.#unmigratedLegacyProxyUrl !== null) {
+          // Defer rewriting config.json until SecretStore persists migrated proxy credentials.
+          this.#pendingConfigRewrite = true;
+        } else {
+          try {
+            NodeFS.mkdirSync(this.#stateDir, { recursive: true });
+            NodeFS.writeFileSync(this.#configPath, `${JSON.stringify(validated, null, 2)}\n`, {
+              encoding: "utf8",
+              mode: 0o600,
+            });
+          } catch {
+            this.#pendingConfigRewrite = true;
+          }
+        }
+      }
+
+      return validated;
     } catch {
+      this.#persistedKbUrl = null;
+      this.#unmigratedLegacyProxyUrl = null;
       return fallback;
     }
   }
@@ -742,9 +1022,19 @@ export class WagentRuntime {
     }
   }
 
-  async #persistConfig(): Promise<void> {
+  async #writeConfigFile(target: WagentStoredConfig): Promise<void> {
     await NodeFSP.mkdir(this.#stateDir, { recursive: true });
-    await NodeFSP.writeFile(this.#configPath, `${JSON.stringify(this.#config, null, 2)}\n`, "utf8");
+    const tmpPath = `${this.#configPath}.tmp.${process.pid}.${NodeCrypto.randomUUID()}`;
+    try {
+      await NodeFSP.writeFile(tmpPath, `${JSON.stringify(target, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      await NodeFSP.rename(tmpPath, this.#configPath);
+    } catch (error) {
+      await NodeFSP.rm(tmpPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   async #persistRuns(): Promise<void> {

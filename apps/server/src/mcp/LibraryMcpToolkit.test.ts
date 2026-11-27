@@ -193,14 +193,16 @@ it.effect(
           answer: "论文第 2 页给出了不同码距下的逻辑错误率曲线。",
         });
 
-        // 1. Direct session sees all 5 library tools up front
+        // 1. Direct session sees all 7 library tools up front
         const direct = yield* openSession("directToken", false);
         expect(yield* direct.listed).toEqual([
           "library_append_note",
           "library_get_reading_notes",
           "library_read_item",
+          "library_run_feed",
           "library_save_url",
           "library_search",
+          "library_work_harvest",
         ]);
 
         const searchResult = yield* direct.call("library_search", { query: "量子" });
@@ -285,6 +287,21 @@ it.effect(
         });
         expect(ssrfSave.isError).toBe(true);
 
+        // 1e. library_run_feed respects paused feeds immediately without outbound fetch
+        const pausedFeed = yield* library.upsertFeed({
+          name: "Paused arXiv Feed",
+          kind: "arxiv",
+          url: "https://export.arxiv.org/api/query?search_query=cat:cs.AI",
+          enabled: false,
+        });
+        const pausedRun = yield* direct.call("library_run_feed", { feedId: pausedFeed.id });
+        expect(pausedRun.isError).not.toBe(true);
+        expect(pausedRun.structuredContent).toMatchObject({
+          feedId: pausedFeed.id,
+          skippedPaused: true,
+          importedCount: 0,
+        });
+
         // 2. Deferred session initially only sees tool_search, discovers library tools via tool_search
         const deferred = yield* openSession("deferredToken", true);
         expect(yield* deferred.listed).toEqual(["tool_search"]);
@@ -303,8 +320,10 @@ it.effect(
           "library_append_note",
           "library_get_reading_notes",
           "library_read_item",
+          "library_run_feed",
           "library_save_url",
           "library_search",
+          "library_work_harvest",
         ]);
         const roSearch = yield* readOnlyClient.call("library_search", { tag: "quantum" });
         expect(roSearch.isError).not.toBe(true);
@@ -322,6 +341,16 @@ it.effect(
         });
         expect(roSaveUrlBlocked.isError).toBe(true);
         expect(JSON.stringify(roSaveUrlBlocked)).toContain("capability_denied");
+        const roRunFeedBlocked = yield* readOnlyClient.call("library_run_feed", {
+          feedId: pausedFeed.id,
+        });
+        expect(roRunFeedBlocked.isError).toBe(true);
+        expect(JSON.stringify(roRunFeedBlocked)).toContain("capability_denied");
+        const roWorkHarvestBlocked = yield* readOnlyClient.call("library_work_harvest", {
+          project: "wagent",
+        });
+        expect(roWorkHarvestBlocked.isError).toBe(true);
+        expect(JSON.stringify(roWorkHarvestBlocked)).toContain("capability_denied");
         // Confirm database was untouched by refused read-only write attempt
         const afterRoAttempt = yield* library.get({ id: seeded.id });
         expect(afterRoAttempt.entry.note).not.toContain("Should be denied");

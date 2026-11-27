@@ -22,9 +22,10 @@ import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpSessionRegistry from "./McpSessionRegistry.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 
 it.effect(
-  "enforces McpToolAccess.writes on wagent_dispatch/cancel/convert while allowing read-only wagent_status",
+  "enforces full-access ceiling on wagent_dispatch and refuses external read-only clients on all wagent tools including status",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -38,8 +39,10 @@ it.effect(
         yield* fs.writeFileString(fixtureMdPath, "# MCP Export\n\nBody.");
         const envId = EnvironmentId.make("env-wagent-mcp");
 
+        let dispatchRuns = 0;
         const executor: WagentExecutor = {
           async run(input) {
+            dispatchRuns += 1;
             input.callbacks.onText(`mcp-executed:${input.prompt}`);
           },
         };
@@ -117,13 +120,37 @@ it.effect(
           capabilities: new Set(["orchestration"]),
           issuedAt: 1,
         };
+        const restrictedThreadId = ThreadId.make("thread-approval-required");
+        const restrictedThreadScope: McpInvocationContext.McpThreadInvocationScope = {
+          environmentId: envId,
+          requestNamespace: "restrictedThreadToken",
+          thread: {
+            threadId: restrictedThreadId,
+            providerSessionId: "restrictedThreadToken",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+          capabilities: new Set(["orchestration"]),
+          issuedAt: 1,
+        };
+
+        const threadsLayer = Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: (threadId) =>
+            Effect.succeed(
+              threadId === restrictedThreadId
+                ? McpToolAccessTestkit.liveThreadShell(threadId, {
+                    runtimeMode: "approval-required",
+                  })
+                : McpToolAccessTestkit.liveThreadShell(threadId),
+            ),
+        });
 
         const serverLayer = McpHttpServer.layerMcpTransport(
           Layer.mergeAll(McpHttpServer.layerWagentToolkit, McpHttpServer.layerToolSearch),
         ).pipe(
           Layer.provide(Layer.succeed(WagentService.WagentService, wagent)),
           Layer.provide(ServerSettings.layerTest()),
-          Layer.provide(McpToolAccessTestkit.liveThreadsLayer),
+          Layer.provide(threadsLayer),
           Layer.provide(
             Layer.succeed(McpHttpServer.McpClientAuthenticator, {
               authenticate: (request) => {
@@ -140,7 +167,13 @@ it.effect(
           Layer.provide(
             Layer.mock(McpSessionRegistry.McpSessionRegistry)({
               resolve: (token) =>
-                Effect.succeed(token === "deferredThreadToken" ? deferredThreadScope : undefined),
+                Effect.succeed(
+                  token === "deferredThreadToken"
+                    ? deferredThreadScope
+                    : token === "restrictedThreadToken"
+                      ? restrictedThreadScope
+                      : undefined,
+                ),
             }),
           ),
         );
@@ -212,11 +245,11 @@ it.effect(
             };
           });
 
-        // 1. Read-only MCP client can inspect status, but is refused on all write tools
+        // 1. External read-only MCP client is refused on ALL Wagent tools including wagent_status (2A)
         const readOnly = yield* openSession("readonlyClientToken");
         const statusCall = yield* readOnly.call("wagent_status", {});
-        expect(statusCall.isError).toBe(false);
-        expect(statusCall.parsed?.running).toBe(false);
+        expect(statusCall.isError).toBe(true);
+        expect(statusCall.text).toMatch(/read-only|capability_denied/i);
 
         const refusedDispatch = yield* readOnly.call("wagent_dispatch", {
           prompt: "should be refused",
@@ -231,6 +264,20 @@ it.effect(
           source: "https://example.com/blocked",
         });
         expect(refusedConvert.isError).toBe(true);
+        expect(dispatchRuns).toBe(0);
+
+        // 1b. Restricted (approval-required) thread can inspect status, but is refused on wagent_dispatch
+        const restricted = yield* openSession("restrictedThreadToken");
+        const restrictedStatus = yield* restricted.call("wagent_status", {});
+        expect(restrictedStatus.isError).toBe(false);
+        expect(restrictedStatus.parsed?.running).toBe(false);
+
+        const restrictedDispatch = yield* restricted.call("wagent_dispatch", {
+          prompt: "attempt privilege escalation",
+        });
+        expect(restrictedDispatch.isError).toBe(true);
+        expect(restrictedDispatch.text).toMatch(/capability_denied|below full-access/i);
+        expect(dispatchRuns).toBe(0);
 
         // 2. Full-access MCP client can dispatch, convert, and inspect completed result
         const full = yield* openSession("fullClientToken");

@@ -525,6 +525,14 @@ export function DeepReadWorkbench({ environmentId, entry }: DeepReadWorkbenchPro
       });
       return;
     }
+    if (result.value.queued === true) {
+      toastManager.add({
+        type: "info",
+        title: gt("Queued wkb annotation sync"),
+        description: result.value.summary,
+      });
+      return;
+    }
     toastManager.add({
       type: "success",
       title: m(msg("Synced annotations to wkb brain")),
@@ -554,6 +562,14 @@ export function DeepReadWorkbench({ environmentId, entry }: DeepReadWorkbenchPro
           squashAtomCommandFailure(result),
           m(msg("Unable to submit entry to wkb brain.")),
         ),
+      });
+      return;
+    }
+    if (result.value.queued === true) {
+      toastManager.add({
+        type: "info",
+        title: gt("Queued wkb submission"),
+        description: result.value.summary,
       });
       return;
     }

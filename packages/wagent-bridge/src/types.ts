@@ -20,6 +20,12 @@ export interface WagentModelConfig {
   readonly thinking: WagentThinkingLevel;
 }
 
+export interface WagentExplicitPaths {
+  readonly agentDir?: boolean | undefined;
+  readonly kbDir?: boolean | undefined;
+  readonly kbUrl?: boolean | undefined;
+}
+
 export interface WagentStoredConfig {
   readonly workspace: string;
   readonly model: WagentModelConfig;
@@ -30,12 +36,14 @@ export interface WagentStoredConfig {
   readonly allowedUserIds: ReadonlyArray<number>;
   readonly proxy: string;
   readonly agentDir: string;
+  readonly explicitPaths?: WagentExplicitPaths | undefined;
 }
 
 export interface WagentSecrets {
   readonly telegramBotToken?: string | undefined;
   readonly deepseekApiKey?: string | undefined;
   readonly wkbToken?: string | undefined;
+  readonly proxyUrl?: string | undefined;
 }
 
 export interface WagentPendingApproval {
@@ -105,6 +113,7 @@ export interface WagentExecutorRunInput {
   readonly config: WagentStoredConfig;
   readonly secrets: WagentSecrets;
   readonly stateDir: string;
+  readonly uvBinary?: string | undefined;
   readonly signal: AbortSignal;
   readonly callbacks: WagentExecutorCallbacks;
 }

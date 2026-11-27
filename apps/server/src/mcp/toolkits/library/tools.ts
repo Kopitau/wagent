@@ -106,6 +106,24 @@ const LibrarySaveUrlResult = Schema.Struct({
   fallbackReason: Schema.NullOr(Schema.String),
 });
 
+const LibraryRunFeedResult = Schema.Struct({
+  feedId: Schema.String,
+  skippedPaused: Schema.Boolean,
+  fetchedCount: NonNegativeInt,
+  importedCount: NonNegativeInt,
+  deduplicatedCount: NonNegativeInt,
+  summarizedCount: NonNegativeInt,
+  budgetExhaustedCount: NonNegativeInt,
+  importedEntryIds: Schema.Array(Schema.String),
+  errors: Schema.Array(Schema.String),
+});
+
+const LibraryWorkHarvestResult = Schema.Struct({
+  mode: Schema.Literals(["remote", "local"]),
+  project: Schema.NullOr(Schema.String),
+  summary: Schema.String,
+});
+
 const LibrarySearchTool = Tool.make("library_search", {
   description:
     "Search this environment's research library by text query, kind, or tag. Returns lightweight summaries and 1-based matched PDF page numbers.",
@@ -282,10 +300,73 @@ const LibrarySaveUrlTool = Tool.make("library_save_url", {
   .annotate(Tool.Idempotent, false)
   .annotate(Tool.OpenWorld, true);
 
+const LibraryRunFeedTool = Tool.make("library_run_feed", {
+  description:
+    "Run a configured RSS or arXiv research library feed once with deduplication, pause enforcement, and daily AI budget caps.",
+  parameters: Schema.Struct({
+    feedId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+      description: "Configured library feed ID.",
+    }),
+  }),
+  success: LibraryRunFeedResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies: writeDependencies,
+})
+  .annotate(Tool.Title, "Run research library feed")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, true);
+
+const LibraryWorkHarvestTool = Tool.make("library_work_harvest", {
+  description:
+    "Harvest project progress and git lessons into the wkb work vault (local harvest or remote work_submit).",
+  parameters: Schema.Struct({
+    project: Schema.optional(
+      TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+        description: "Optional project name filter (required for remote work_submit).",
+      }),
+    ),
+    report: Schema.optional(
+      TrimmedNonEmptyString.check(Schema.isMaxLength(32_000)).annotate({
+        description: "Optional structured report markdown for remote work_submit.",
+      }),
+    ),
+    files: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          name: Schema.Literals(["overview", "decisions", "pitfalls", "timeline"]),
+          content: Schema.String.check(Schema.isMaxLength(60_000)),
+          base: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+        }),
+      )
+        .check(Schema.isMaxLength(4))
+        .annotate({
+          description: "Optional work vault pages for remote work_submit.",
+        }),
+    ),
+    commits: Schema.optional(Schema.String.check(Schema.isMaxLength(16_000))),
+    summary: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+    projectBlurb: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
+  }),
+  success: LibraryWorkHarvestResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies: writeDependencies,
+})
+  .annotate(Tool.Title, "Harvest project notes to wkb work")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 export const LibraryToolkit = Toolkit.make(
   LibrarySearchTool,
   LibraryReadItemTool,
   LibraryGetReadingNotesTool,
   LibraryAppendNoteTool,
   LibrarySaveUrlTool,
+  LibraryRunFeedTool,
+  LibraryWorkHarvestTool,
 );

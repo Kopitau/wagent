@@ -29,6 +29,9 @@ export function createLibraryEnvironmentAtoms<R, E>(
   const imaRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make(0).pipe(Atom.withLabel(`environment-data:library:ima-revision:${environmentId}`)),
   );
+  const feedRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(0).pipe(Atom.withLabel(`environment-data:library:feed-revision:${environmentId}`)),
+  );
 
   const bumpRevision = (registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) => {
     registry.update(revisionAtom(environmentId), (current) => current + 1);
@@ -42,13 +45,18 @@ export function createLibraryEnvironmentAtoms<R, E>(
   const bumpImaRevision = (registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) => {
     registry.update(imaRevisionAtom(environmentId), (current) => current + 1);
   };
+  const bumpFeedRevision = (registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) => {
+    registry.update(feedRevisionAtom(environmentId), (current) => current + 1);
+  };
 
   return {
     revisionAtom,
     readingRevisionAtom,
     imaRevisionAtom,
+    feedRevisionAtom,
     invalidate: bumpRevision,
     invalidateReading: bumpReadingRevision,
+    invalidateFeeds: bumpFeedRevision,
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:library:list",
       tag: WS_METHODS.libraryList,
@@ -235,6 +243,50 @@ export function createLibraryEnvironmentAtoms<R, E>(
     imaSearch: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:library:ima-search",
       tag: WS_METHODS.libraryImaSearch,
+    }),
+    listFeeds: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:library:list-feeds",
+      tag: WS_METHODS.libraryListFeeds,
+      staleTimeMs: 0,
+      idleTtlMs: LIBRARY_QUERY_IDLE_TTL_MS,
+      refreshTrigger: ({ environmentId }) => feedRevisionAtom(environmentId),
+    }),
+    upsertFeed: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:upsert-feed",
+      tag: WS_METHODS.libraryUpsertFeed,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpFeedRevision(registry, environmentId);
+        }),
+    }),
+    setFeedEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:set-feed-enabled",
+      tag: WS_METHODS.librarySetFeedEnabled,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpFeedRevision(registry, environmentId);
+        }),
+    }),
+    deleteFeed: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:delete-feed",
+      tag: WS_METHODS.libraryDeleteFeed,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpFeedRevision(registry, environmentId);
+        }),
+    }),
+    runFeedNow: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:run-feed-now",
+      tag: WS_METHODS.libraryRunFeedNow,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpFeedRevision(registry, environmentId);
+          bumpRevision(registry, environmentId);
+        }),
+    }),
+    runWorkHarvest: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:run-work-harvest",
+      tag: WS_METHODS.libraryRunWorkHarvest,
     }),
   };
 }

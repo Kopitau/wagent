@@ -717,10 +717,15 @@ export function DeepReadPanels({
                   <h2 className="font-semibold text-sm">
                     <T>Sync to wkb brain</T>
                   </h2>
-                  <Badge size="sm" variant={wkbStatus?.available ? "secondary" : "outline"}>
-                    {wkbStatus?.available ? (
+                  <Badge
+                    size="sm"
+                    variant={
+                      (wkbStatus?.syncAvailable ?? wkbStatus?.available) ? "secondary" : "outline"
+                    }
+                  >
+                    {(wkbStatus?.syncAvailable ?? wkbStatus?.available) ? (
                       <T>
-                        Connected (<Var>{wkbStatus.mode}</Var>)
+                        Connected (<Var>{wkbStatus?.mode ?? "local"}</Var>)
                       </T>
                     ) : (
                       <T>Unavailable</T>
@@ -735,7 +740,12 @@ export function DeepReadPanels({
                 />
                 <Button
                   data-testid="deepread-sync-wkb-btn"
-                  disabled={!canWrite || wkbBusy || annotatedParagraphs.length === 0}
+                  disabled={
+                    !canWrite ||
+                    wkbBusy ||
+                    annotatedParagraphs.length === 0 ||
+                    !(wkbStatus?.syncAvailable ?? wkbStatus?.available)
+                  }
                   size="xs"
                   onClick={() => onSyncWkbAnnotations(wkbSlugInput.trim() || undefined)}
                 >
@@ -755,7 +765,9 @@ export function DeepReadPanels({
                 />
                 <Button
                   data-testid="deepread-submit-wkb-btn"
-                  disabled={!canWrite || wkbBusy}
+                  disabled={
+                    !canWrite || wkbBusy || !(wkbStatus?.syncAvailable ?? wkbStatus?.available)
+                  }
                   size="xs"
                   variant="outline"
                   onClick={() => onSubmitToWkb(wkbSubmitNote.trim() || undefined)}

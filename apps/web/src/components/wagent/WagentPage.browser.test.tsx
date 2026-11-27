@@ -351,11 +351,49 @@ it("dispatches tasks, handles deletion approval, imports exports to Library, and
     await userEvent.click(page.getByTestId("wagent-import-export-attention.pdf"));
     expect(mockState.importedExports).toEqual([{ relativePath: "attention.pdf" }]);
 
-    // 4. Open Settings dialog (visible because canConfigure is true) and save
+    // 4. Open Settings dialog (visible because canConfigure is true), simulate concurrent client B updating kbUrl, edit only timeout + model.id, and verify patch omits untouched fields
     await userEvent.click(page.getByTestId("wagent-open-settings-btn"));
     await expect.element(page.getByTestId("wagent-settings-dialog")).toBeVisible();
+    const current = mockState.getStatus()!;
+    mockState.setStatus({
+      ...current,
+      config: {
+        ...current.config,
+        kbUrl: "https://client-b.example.invalid/kb/mcp",
+        hasWkbToken: true,
+      },
+    });
+    const timeoutInput = page.getByLabelText("Deletion confirm timeout (seconds)");
+    await userEvent.fill(timeoutInput, "155");
+    const modelIdInput = page.getByLabelText("Model ID");
+    await userEvent.fill(modelIdInput, "deepseek-v4-pro");
+    await screen.rerender(
+      <RegistryProvider>
+        <SidebarProvider>
+          <WagentPage />
+        </SidebarProvider>
+      </RegistryProvider>,
+    );
     await userEvent.click(page.getByTestId("wagent-save-settings-btn"));
-    expect(mockState.configUpdates).toHaveLength(1);
+    expect(mockState.configUpdates).toEqual([
+      {
+        confirmTimeoutSec: 155,
+        model: { id: "deepseek-v4-pro" },
+      },
+    ]);
+
+    // 5. Entering a WKB token sends expectedKbUrl matching the dialog's opened KB URL snapshot
+    mockState.configUpdates.length = 0;
+    await userEvent.click(page.getByTestId("wagent-open-settings-btn"));
+    await expect.element(page.getByTestId("wagent-settings-dialog")).toBeVisible();
+    await userEvent.fill(page.getByLabelText("wkb MCP Bearer Token"), "tok-from-a");
+    await userEvent.click(page.getByTestId("wagent-save-settings-btn"));
+    expect(mockState.configUpdates).toEqual([
+      {
+        wkbToken: "tok-from-a",
+        expectedKbUrl: "https://client-b.example.invalid/kb/mcp",
+      },
+    ]);
   } finally {
     await screen.unmount();
   }

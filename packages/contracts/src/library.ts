@@ -15,6 +15,7 @@ export const LibraryEntryKind = Schema.Literals([
 export type LibraryEntryKind = typeof LibraryEntryKind.Type;
 
 export const LIBRARY_UPLOAD_PDF_PATH = "/api/library/upload";
+export const LIBRARY_UPLOAD_METADATA_HEADER = "x-t3-library-metadata";
 export const libraryItemPdfPath = (id: string): string =>
   `/api/library/items/${encodeURIComponent(id)}/pdf`;
 
@@ -96,6 +97,7 @@ export type LibraryListResult = typeof LibraryListResult.Type;
 
 export const LibraryGetInput = Schema.Struct({
   id: LibraryEntryId,
+  maxBodyChars: Schema.optional(PositiveInt),
 });
 export type LibraryGetInput = typeof LibraryGetInput.Type;
 
@@ -187,6 +189,7 @@ export type LibraryWkbMode = typeof LibraryWkbMode.Type;
 
 export const LibraryWkbStatusResult = Schema.Struct({
   available: Schema.Boolean,
+  syncAvailable: Schema.optional(Schema.Boolean),
   mode: LibraryWkbMode,
   remoteUrl: Schema.NullOr(LibraryUrl),
 });
@@ -276,6 +279,7 @@ export type LibraryReadingInsightContract = typeof LibraryReadingInsightContract
 
 export const LibraryGetReadingStateInput = Schema.Struct({
   entryId: LibraryEntryId,
+  includePages: Schema.optional(Schema.Boolean),
 });
 export type LibraryGetReadingStateInput = typeof LibraryGetReadingStateInput.Type;
 
@@ -382,6 +386,7 @@ export const LibraryRunReadingAiActionInput = Schema.Struct({
   questionId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
   instanceId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
   model: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  strictModel: Schema.optional(Schema.Boolean),
 });
 export type LibraryRunReadingAiActionInput = typeof LibraryRunReadingAiActionInput.Type;
 
@@ -412,6 +417,7 @@ export const LibrarySyncWkbAnnotationsResult = Schema.Struct({
   mode: Schema.Literals(["remote", "local"]),
   summary: Schema.String,
   syncedCount: NonNegativeInt,
+  queued: Schema.optional(Schema.Boolean),
 });
 export type LibrarySyncWkbAnnotationsResult = typeof LibrarySyncWkbAnnotationsResult.Type;
 
@@ -424,6 +430,7 @@ export type LibrarySubmitToWkbInput = typeof LibrarySubmitToWkbInput.Type;
 export const LibrarySubmitToWkbResult = Schema.Struct({
   mode: Schema.Literals(["remote", "local"]),
   summary: Schema.String,
+  queued: Schema.optional(Schema.Boolean),
 });
 export type LibrarySubmitToWkbResult = typeof LibrarySubmitToWkbResult.Type;
 
@@ -462,6 +469,116 @@ export const LibraryImaSearchResult = Schema.Struct({
   hits: Schema.Array(LibraryImaSearchHit),
 });
 export type LibraryImaSearchResult = typeof LibraryImaSearchResult.Type;
+
+export const LibraryFeedKind = Schema.Literals(["rss", "arxiv"]);
+export type LibraryFeedKind = typeof LibraryFeedKind.Type;
+
+const LibraryFeedId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+
+export const LibraryFeedContract = Schema.Struct({
+  id: LibraryFeedId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  kind: LibraryFeedKind,
+  url: LibraryUrl,
+  tags: LibraryTags,
+  enabled: Schema.Boolean,
+  intervalMinutes: Schema.Int.check(Schema.isBetween({ minimum: 15, maximum: 10_080 })),
+  maxItemsPerRun: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })),
+  autoSummarize: Schema.Boolean,
+  aiInstanceId: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  aiModel: Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  dailyAiBudget: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 })),
+  lastRunAt: Schema.NullOr(IsoDateTime),
+  lastStatus: Schema.NullOr(Schema.String.check(Schema.isMaxLength(64))),
+  lastError: Schema.NullOr(Schema.String.check(Schema.isMaxLength(400))),
+  lastImportedCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type LibraryFeedContract = typeof LibraryFeedContract.Type;
+
+export const LibraryListFeedsResult = Schema.Struct({
+  feeds: Schema.Array(LibraryFeedContract),
+  dailyAiUsed: NonNegativeInt,
+});
+export type LibraryListFeedsResult = typeof LibraryListFeedsResult.Type;
+
+export const LibraryUpsertFeedInput = Schema.Struct({
+  id: Schema.optional(LibraryFeedId),
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  kind: LibraryFeedKind,
+  url: LibraryUrl,
+  tags: Schema.optional(LibraryTags),
+  enabled: Schema.optional(Schema.Boolean),
+  intervalMinutes: Schema.optional(
+    Schema.Int.check(Schema.isBetween({ minimum: 15, maximum: 10_080 })),
+  ),
+  maxItemsPerRun: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }))),
+  autoSummarize: Schema.optional(Schema.Boolean),
+  aiInstanceId: Schema.optional(
+    Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  ),
+  aiModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString.check(Schema.isMaxLength(200)))),
+  dailyAiBudget: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 100 }))),
+});
+export type LibraryUpsertFeedInput = typeof LibraryUpsertFeedInput.Type;
+
+export const LibrarySetFeedEnabledInput = Schema.Struct({
+  id: LibraryFeedId,
+  enabled: Schema.Boolean,
+});
+export type LibrarySetFeedEnabledInput = typeof LibrarySetFeedEnabledInput.Type;
+
+export const LibraryDeleteFeedInput = Schema.Struct({
+  id: LibraryFeedId,
+});
+export type LibraryDeleteFeedInput = typeof LibraryDeleteFeedInput.Type;
+
+export const LibraryDeleteFeedResult = Schema.Struct({
+  deleted: Schema.Boolean,
+});
+export type LibraryDeleteFeedResult = typeof LibraryDeleteFeedResult.Type;
+
+export const LibraryRunFeedNowInput = Schema.Struct({
+  id: LibraryFeedId,
+});
+export type LibraryRunFeedNowInput = typeof LibraryRunFeedNowInput.Type;
+
+export const LibraryRunFeedNowResult = Schema.Struct({
+  feed: LibraryFeedContract,
+  skippedPaused: Schema.Boolean,
+  fetchedCount: NonNegativeInt,
+  importedCount: NonNegativeInt,
+  deduplicatedCount: NonNegativeInt,
+  summarizedCount: NonNegativeInt,
+  budgetExhaustedCount: NonNegativeInt,
+  importedEntryIds: Schema.Array(LibraryEntryId),
+  errors: Schema.Array(Schema.String),
+});
+export type LibraryRunFeedNowResult = typeof LibraryRunFeedNowResult.Type;
+
+export const LibraryWorkFileInput = Schema.Struct({
+  name: Schema.Literals(["overview", "decisions", "pitfalls", "timeline"]),
+  content: Schema.String.check(Schema.isMaxLength(60_000)),
+  base: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+});
+
+export const LibraryRunWorkHarvestInput = Schema.Struct({
+  project: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+  report: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(32_000))),
+  files: Schema.optional(Schema.Array(LibraryWorkFileInput).check(Schema.isMaxLength(4))),
+  projectBlurb: Schema.optional(Schema.String.check(Schema.isMaxLength(300))),
+  commits: Schema.optional(Schema.String.check(Schema.isMaxLength(16_000))),
+  summary: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+});
+export type LibraryRunWorkHarvestInput = typeof LibraryRunWorkHarvestInput.Type;
+
+export const LibraryRunWorkHarvestResult = Schema.Struct({
+  mode: Schema.Literals(["remote", "local"]),
+  project: Schema.NullOr(Schema.String),
+  summary: Schema.String,
+});
+export type LibraryRunWorkHarvestResult = typeof LibraryRunWorkHarvestResult.Type;
 
 export class LibraryValidationError extends Schema.TaggedError<LibraryValidationError>()(
   "LibraryValidationError",

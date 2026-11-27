@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -302,6 +303,7 @@ describe("LibraryService M2b reading, AI dual-route, wkb sync, and ima credentia
           const mockWkb = Layer.mock(WkbBridgeService.WkbBridgeService)({
             status: Effect.succeed({
               available: true,
+              syncAvailable: true,
               mode: "local" as const,
               remoteUrl: null,
               uvPath: "uv",
@@ -468,5 +470,174 @@ describe("LibraryService M2b reading, AI dual-route, wkb sync, and ima credentia
           expect(refConfigOnDisk).not.toContain("resolved-secret-token");
         }),
       ).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "fails closed when model catalog enumeration errors and binds WkbBridgeService remote tokens to exact query/path URLs",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-library-strict-cat-" });
+          const envId = EnvironmentId.make("env-strict-cat");
+
+          let runnerCalls = 0;
+          const brokenTextGenerators = Layer.mock(TextGenerators.TextGenerators)({
+            listModels: () =>
+              Effect.fail({
+                _tag: "TextGenerationError",
+                detail: "catalog unreachable",
+                message: "catalog unreachable",
+              } as never),
+            runner: () =>
+              Effect.succeed((() =>
+                Effect.sync(() => {
+                  runnerCalls += 1;
+                  return {} as never;
+                })) as never),
+          });
+
+          const mockRegistry = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            listInstances: Effect.succeed([]),
+            getInstance: () => Effect.undefined,
+          });
+
+          const settingsLayer = ServerSettings.layerTest({
+            textGenerators: {
+              [ProviderInstanceId.make("named")]: {
+                kind: "openaiCompatible",
+                label: "Named Provider",
+                enabled: true,
+                apiKey: "sk-test",
+                baseUrl: "https://api.openai.com/v1",
+              },
+            },
+          });
+
+          const readingAiLayer = ReadingAiRunner.layer.pipe(
+            Layer.provide(settingsLayer),
+            Layer.provide(brokenTextGenerators),
+            Layer.provide(mockRegistry),
+          );
+
+          const libraryLayer = LibraryService.layer.pipe(
+            Layer.provide(readingAiLayer),
+            Layer.provide(ServerConfig.layerTest(tempDir, tempDir)),
+            Layer.provide(
+              Layer.mock(ServerEnvironment.ServerEnvironment)({
+                getEnvironmentId: Effect.succeed(envId),
+              }),
+            ),
+          );
+
+          const built = yield* Layer.build(libraryLayer);
+          const library = built.mapUnsafe.get(
+            LibraryService.LibraryService.key,
+          ) as LibraryService.LibraryService["Service"];
+
+          const entry = yield* library.save({
+            kind: "pdf",
+            title: "Strict Catalog Paper",
+            body: "[p.1]\nBody text.",
+          });
+
+          const catalogErrRes = yield* library
+            .runReadingAiAction({
+              entryId: entry.id,
+              action: "summary5",
+              instanceId: "named",
+              model: "explicit",
+            })
+            .pipe(Effect.result);
+          expect(catalogErrRes._tag).toBe("Failure");
+          expect(runnerCalls).toBe(0);
+
+          // WkbBridgeService exact endpoint binding: ?tenant=fixture/ sent verbatim; /kb vs /kb/ rejected
+          const secrets = makeInMemorySecretStore();
+          secrets.store.set(
+            "wagent-wkb-token",
+            new TextEncoder().encode(
+              JSON.stringify({
+                token: "bound-tok",
+                kbUrl: "https://kb.example.invalid/mcp?tenant=fixture/",
+              }),
+            ),
+          );
+          const seenRemoteUrls: string[] = [];
+          const wkbCtx = yield* Layer.build(
+            WkbBridgeService.makeLayer({
+              fetchImpl: async (url, init) => {
+                seenRemoteUrls.push(String(url));
+                if (String(init?.method ?? "POST").toUpperCase() === "DELETE") {
+                  return new Response(null, { status: 204 });
+                }
+                const req = JSON.parse(String(init?.body ?? "{}")) as {
+                  id?: number;
+                  method: string;
+                };
+                if (req.method === "notifications/initialized") {
+                  return new Response(null, { status: 202 });
+                }
+                if (req.method === "initialize") {
+                  return new Response(JSON.stringify({ jsonrpc: "2.0", id: req.id, result: {} }), {
+                    status: 200,
+                  });
+                }
+                if (req.method === "tools/list") {
+                  return new Response(
+                    JSON.stringify({
+                      jsonrpc: "2.0",
+                      id: req.id,
+                      result: { tools: [{ name: "work_harvest" }] },
+                    }),
+                    { status: 200 },
+                  );
+                }
+                return new Response(
+                  JSON.stringify({
+                    jsonrpc: "2.0",
+                    id: req.id,
+                    result: { content: [{ text: "ok" }] },
+                  }),
+                  { status: 200 },
+                );
+              },
+            }).pipe(
+              Layer.provide(ServerConfig.layerTest(tempDir, tempDir)),
+              Layer.provide(secrets.layer),
+            ),
+          );
+          const wkbSvc = wkbCtx.mapUnsafe.get(
+            WkbBridgeService.WkbBridgeService.key,
+          ) as WkbBridgeService.WkbBridgeService["Service"];
+          const whRes = yield* wkbSvc.workHarvest({ project: "demo" });
+          expect(whRes.mode).toBe("remote");
+          expect(seenRemoteUrls).toEqual([
+            "https://kb.example.invalid/mcp?tenant=fixture/",
+            "https://kb.example.invalid/mcp?tenant=fixture/",
+            "https://kb.example.invalid/mcp?tenant=fixture/",
+          ]);
+
+          // Persisted config.json with '/kb/' must NOT match secret bound to '/kb'
+          secrets.store.set(
+            "wagent-wkb-token",
+            new TextEncoder().encode(
+              JSON.stringify({
+                token: "bound-slashless",
+                kbUrl: "https://kb.example.invalid/kb",
+              }),
+            ),
+          );
+          const wagentCfgDir = path.join(tempDir, "userdata", "wagent");
+          yield* fs.makeDirectory(wagentCfgDir, { recursive: true });
+          yield* fs.writeFileString(
+            path.join(wagentCfgDir, "config.json"),
+            JSON.stringify({ kbUrl: "https://kb.example.invalid/kb/" }),
+          );
+          const mismatchStatus = yield* wkbSvc.status;
+          expect(mismatchStatus.syncAvailable).toBe(false);
+        }),
+      ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 });

@@ -1247,6 +1247,9 @@ it.effect(
         WS_METHODS.libraryImaSearch,
         WS_METHODS.libraryRunReadingAiAction,
         WS_METHODS.libraryUpdateImaConfig,
+        WS_METHODS.libraryListFeeds,
+        WS_METHODS.libraryRunFeedNow,
+        WS_METHODS.libraryRunWorkHarvest,
       ]);
       const group = WsRpcGroup.omit(
         ...[...WsRpcGroup.requests.keys()].filter(
@@ -1258,6 +1261,9 @@ it.effect(
             | typeof WS_METHODS.libraryImaSearch
             | typeof WS_METHODS.libraryRunReadingAiAction
             | typeof WS_METHODS.libraryUpdateImaConfig
+            | typeof WS_METHODS.libraryListFeeds
+            | typeof WS_METHODS.libraryRunFeedNow
+            | typeof WS_METHODS.libraryRunWorkHarvest
           > => !kept.has(tag),
         ),
       );
@@ -1285,6 +1291,48 @@ it.effect(
             return sampleImaView;
           }),
         ),
+        group.toLayerHandler(WS_METHODS.libraryListFeeds, () =>
+          Effect.succeed({ feeds: [], dailyAiUsed: 0 }),
+        ),
+        group.toLayerHandler(WS_METHODS.libraryRunFeedNow, (input) =>
+          Effect.succeed({
+            feed: {
+              id: input.id,
+              name: "Test Feed",
+              kind: "rss" as const,
+              url: "https://example.org/rss.xml",
+              tags: [],
+              enabled: true,
+              intervalMinutes: 60,
+              maxItemsPerRun: 10,
+              autoSummarize: false,
+              aiInstanceId: null,
+              aiModel: null,
+              dailyAiBudget: 5,
+              lastRunAt: null,
+              lastStatus: null,
+              lastError: null,
+              lastImportedCount: 0,
+              createdAt: "2026-11-25T00:00:00.000Z",
+              updatedAt: "2026-11-25T00:00:00.000Z",
+            },
+            skippedPaused: false,
+            fetchedCount: 0,
+            importedCount: 0,
+            deduplicatedCount: 0,
+            summarizedCount: 0,
+            budgetExhaustedCount: 0,
+            importedEntryIds: [],
+            errors: [],
+          }),
+        ),
+        group.toLayerHandler(WS_METHODS.libraryRunWorkHarvest, (input) =>
+          Effect.succeed({
+            mode: "local" as const,
+            project: input.project ?? null,
+            summary: "ok",
+          }),
+        ),
       );
 
       const reader = yield* RpcTest.makeClient(group).pipe(
@@ -1292,6 +1340,13 @@ it.effect(
       );
       expect((yield* reader[WS_METHODS.libraryImaStatus]()).enabled).toBe(true);
       expect((yield* reader[WS_METHODS.libraryImaSearch]({ query: "attention" })).hits).toEqual([]);
+      expect((yield* reader[WS_METHODS.libraryListFeeds]()).feeds).toEqual([]);
+      expect(
+        yield* reader[WS_METHODS.libraryRunFeedNow]({ id: "feed-1" }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+      expect(
+        yield* reader[WS_METHODS.libraryRunWorkHarvest]({ project: "wagent" }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
       expect(
         yield* reader[WS_METHODS.libraryRunReadingAiAction]({
           entryId: "entry-1",

@@ -20,6 +20,17 @@ export type LibraryPageExtractionStatus = (typeof LIBRARY_PAGE_EXTRACTION_STATUS
 export const LIBRARY_SEARCH_MODES = ["browse", "fts5", "substring"] as const;
 export type LibrarySearchMode = (typeof LIBRARY_SEARCH_MODES)[number];
 
+export const LIBRARY_FEED_KINDS = ["rss", "arxiv"] as const;
+export type LibraryFeedKind = (typeof LIBRARY_FEED_KINDS)[number];
+
+export const LIBRARY_FEED_MIN_INTERVAL_MINUTES = 15;
+export const LIBRARY_FEED_MAX_INTERVAL_MINUTES = 10_080;
+export const LIBRARY_FEED_DEFAULT_INTERVAL_MINUTES = 360;
+export const LIBRARY_FEED_MAX_ITEMS_PER_RUN = 50;
+export const LIBRARY_FEED_DEFAULT_ITEMS_PER_RUN = 10;
+export const LIBRARY_FEED_MAX_DAILY_AI_BUDGET = 100;
+export const LIBRARY_FEED_DEFAULT_DAILY_AI_BUDGET = 5;
+
 export const LIBRARY_MAX_TITLE_CHARS = 300;
 export const LIBRARY_MAX_URL_CHARS = 2048;
 export const LIBRARY_MAX_BODY_CHARS = 240_000;
@@ -329,4 +340,82 @@ export interface ImaSearchHit {
   readonly snippet: string;
   readonly url: string | null;
   readonly score: number | null;
+}
+
+export interface LibraryFeed {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: LibraryFeedKind;
+  readonly url: string;
+  readonly tags: ReadonlyArray<string>;
+  readonly enabled: boolean;
+  readonly intervalMinutes: number;
+  readonly maxItemsPerRun: number;
+  readonly autoSummarize: boolean;
+  readonly aiInstanceId: string | null;
+  readonly aiModel: string | null;
+  readonly dailyAiBudget: number;
+  readonly lastRunAt: string | null;
+  readonly lastStatus: string | null;
+  readonly lastError: string | null;
+  readonly lastImportedCount: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface UpsertLibraryFeedInput {
+  readonly id?: string | undefined;
+  readonly name: string;
+  readonly kind: LibraryFeedKind;
+  readonly url: string;
+  readonly tags?: ReadonlyArray<string> | undefined;
+  readonly enabled?: boolean | undefined;
+  readonly intervalMinutes?: number | undefined;
+  readonly maxItemsPerRun?: number | undefined;
+  readonly autoSummarize?: boolean | undefined;
+  readonly aiInstanceId?: string | null | undefined;
+  readonly aiModel?: string | null | undefined;
+  readonly dailyAiBudget?: number | undefined;
+}
+
+export interface ParsedFeedItem {
+  readonly externalId: string;
+  readonly title: string;
+  readonly url: string | null;
+  readonly summary: string;
+  readonly authors: ReadonlyArray<string>;
+  readonly categories: ReadonlyArray<string>;
+  readonly publishedAt: string | null;
+}
+
+export interface LibraryFeedRunResult {
+  readonly feed: LibraryFeed;
+  readonly skippedPaused: boolean;
+  readonly fetchedCount: number;
+  readonly importedCount: number;
+  readonly deduplicatedCount: number;
+  readonly summarizedCount: number;
+  readonly budgetExhaustedCount: number;
+  readonly importedEntryIds: ReadonlyArray<string>;
+  readonly errors: ReadonlyArray<string>;
+}
+
+export interface IngestLibraryFeedItemInput {
+  readonly feedId: string;
+  readonly externalId: string;
+  readonly title: string;
+  readonly url: string | null;
+  readonly body: string;
+  readonly tags?: ReadonlyArray<string> | undefined;
+}
+
+export type IngestLibraryFeedItemResult =
+  | { readonly status: "paused_or_missing" }
+  | { readonly status: "deduplicated"; readonly existingEntryId: string | null }
+  | { readonly status: "imported"; readonly entry: LibraryEntry };
+
+export interface LibraryDailyAiBudgetAttempt {
+  readonly allowed: boolean;
+  readonly usedCount: number;
+  readonly usageDate: string;
 }

@@ -31,6 +31,7 @@ import {
   LockIcon,
   MessageSquarePlusIcon,
   PlusIcon,
+  RssIcon,
   SearchIcon,
   StickyNoteIcon,
   Trash2Icon,
@@ -101,6 +102,7 @@ import {
 } from "~/state/library";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+import { LibraryFeedsDialog } from "./LibraryFeedsDialog";
 import { LibraryPdfPreview } from "./LibraryPdfPreview";
 import {
   formatLibraryUrlHost,
@@ -879,17 +881,20 @@ export function LibraryPage({
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   const [selectedEnvId, setSelectedEnvId] = useState<EnvironmentId | null>(null);
-  const [queryInput, setQueryInput] = useState("");
+  const [queriesByEnv, setQueriesByEnv] = useState<Readonly<Record<string, string>>>({});
   const [kindFilter, setKindFilter] = useState<LibraryEntryKind | typeof ALL_KINDS_VALUE>(
     ALL_KINDS_VALUE,
   );
-  const [tagFilter, setTagFilter] = useState("");
+  const [tagFiltersByEnv, setTagFiltersByEnv] = useState<Readonly<Record<string, string>>>({});
   const [offset, setOffset] = useState(0);
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<ReadonlyArray<string>>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [wkbOpen, setWkbOpen] = useState(false);
-  const [draftQuestion, setDraftQuestion] = useState("");
+  const [feedsOpen, setFeedsOpen] = useState(false);
+  const [draftQuestionsByEnv, setDraftQuestionsByEnv] = useState<Readonly<Record<string, string>>>(
+    {},
+  );
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
   const [importingFile, setImportingFile] = useState(false);
   const [uploadingPdf, setUploadingPdf] = useState(false);
@@ -907,13 +912,29 @@ export function LibraryPage({
 
   const activeEnvironment =
     environments.find((env) => env.environmentId === activeEnvironmentId) ?? null;
+  const isConnected = activeEnvironment?.connection.phase === "connected";
   const supportsLibrary =
     activeEnvironment?.serverConfig?.environment.capabilities.researchLibrary === true;
 
   const canRead = useAtomValue(libraryEnvironment.composeDraft.permissionAtom(activeEnvironmentId));
-  const canWrite = useAtomValue(libraryEnvironment.save.permissionAtom(activeEnvironmentId));
+  const hasWritePermission = useAtomValue(
+    libraryEnvironment.save.permissionAtom(activeEnvironmentId),
+  );
+  const canWrite = isConnected && hasWritePermission;
 
-  const queryEnabled = activeEnvironmentId !== null && supportsLibrary && canRead;
+  const queryEnabled = activeEnvironmentId !== null && isConnected && supportsLibrary && canRead;
+
+  const queryInput = activeEnvironmentId !== null ? (queriesByEnv[activeEnvironmentId] ?? "") : "";
+  const tagFilter =
+    activeEnvironmentId !== null ? (tagFiltersByEnv[activeEnvironmentId] ?? "") : "";
+  const draftQuestion =
+    activeEnvironmentId !== null ? (draftQuestionsByEnv[activeEnvironmentId] ?? "") : "";
+
+  const pinActiveEnv = () => {
+    if (selectedEnvId === null && activeEnvironmentId !== null) {
+      setSelectedEnvId(activeEnvironmentId);
+    }
+  };
 
   const trimmedQuery = queryInput.trim();
   const trimmedTag = tagFilter.trim();
@@ -956,13 +977,16 @@ export function LibraryPage({
     setSelectedEntryIds([]);
     setSelectedProjectId(null);
     setOffset(0);
-    setDraftQuestion("");
+    setCreateOpen(false);
+    setWkbOpen(false);
+    setFeedsOpen(false);
     onEnvironmentChange?.(nextEnvId);
   };
 
   const handleSaveNew = async (input: LibrarySaveInput): Promise<string | null> => {
-    if (activeEnvironmentId === null) return gt("No environment selected.");
-    const result = await saveCommand({ environmentId: activeEnvironmentId, input });
+    if (activeEnvironmentId === null || !canWrite) return gt("No environment selected.");
+    const targetEnvironmentId = activeEnvironmentId;
+    const result = await saveCommand({ environmentId: targetEnvironmentId, input });
     if (result._tag === "Failure") {
       return commandFailureText(
         squashAtomCommandFailure(result),
@@ -975,8 +999,9 @@ export function LibraryPage({
   };
 
   const handleFetchUrl = async (input: LibraryFetchUrlInput): Promise<string | null> => {
-    if (activeEnvironmentId === null) return gt("No environment selected.");
-    const result = await fetchUrlCommand({ environmentId: activeEnvironmentId, input });
+    if (activeEnvironmentId === null || !canWrite) return gt("No environment selected.");
+    const targetEnvironmentId = activeEnvironmentId;
+    const result = await fetchUrlCommand({ environmentId: targetEnvironmentId, input });
     if (result._tag === "Failure") {
       return commandFailureText(
         squashAtomCommandFailure(result),
@@ -998,8 +1023,9 @@ export function LibraryPage({
   };
 
   const handleImportFromWkb = async (input: LibraryImportFromWkbInput): Promise<string | null> => {
-    if (activeEnvironmentId === null) return gt("No environment selected.");
-    const result = await importFromWkbCommand({ environmentId: activeEnvironmentId, input });
+    if (activeEnvironmentId === null || !canWrite) return gt("No environment selected.");
+    const targetEnvironmentId = activeEnvironmentId;
+    const result = await importFromWkbCommand({ environmentId: targetEnvironmentId, input });
     if (result._tag === "Failure") {
       return commandFailureText(
         squashAtomCommandFailure(result),
@@ -1155,6 +1181,7 @@ export function LibraryPage({
   const handleComposeDraft = async () => {
     if (
       activeEnvironmentId === null ||
+      !isConnected ||
       activeProject === null ||
       selectedEntryIds.length === 0 ||
       draftQuestion.trim().length === 0 ||
@@ -1162,12 +1189,16 @@ export function LibraryPage({
     ) {
       return;
     }
+    const targetEnvironmentId = activeEnvironmentId;
+    const targetProjectId = activeProject.id;
+    const questionText = draftQuestion.trim();
+    pinActiveEnv();
     setComposingDraft(true);
     const result = await composeDraftCommand({
-      environmentId: activeEnvironmentId,
+      environmentId: targetEnvironmentId,
       input: {
         entryIds: [...selectedEntryIds],
-        question: draftQuestion.trim(),
+        question: questionText,
       },
     });
     setComposingDraft(false);
@@ -1183,7 +1214,7 @@ export function LibraryPage({
       return;
     }
     await handleNewThread(
-      { environmentId: activeEnvironmentId, projectId: activeProject.id },
+      { environmentId: targetEnvironmentId, projectId: targetProjectId },
       { prompt: result.value.prompt },
     );
   };
@@ -1272,12 +1303,36 @@ export function LibraryPage({
                 <T>Import file</T>
               </Button>
               {wkbStatusQuery.data?.available === true ? (
-                <Button size="sm" variant="outline" onClick={() => setWkbOpen(true)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    pinActiveEnv();
+                    setWkbOpen(true);
+                  }}
+                >
                   <DownloadIcon />
                   <T>Import via wkb</T>
                 </Button>
               ) : null}
-              <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  pinActiveEnv();
+                  setFeedsOpen(true);
+                }}
+              >
+                <RssIcon />
+                <T>Feeds &amp; sync</T>
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => {
+                  pinActiveEnv();
+                  setCreateOpen(true);
+                }}
+              >
                 <PlusIcon />
                 <T>New entry</T>
               </Button>
@@ -1302,7 +1357,7 @@ export function LibraryPage({
 
       <Separator />
 
-      {activeEnvironment === null ? (
+      {activeEnvironment === null || !isConnected ? (
         <div className="flex flex-1 items-center justify-center p-6">
           <Empty>
             <EmptyHeader>
@@ -1367,7 +1422,13 @@ export function LibraryPage({
                 type="search"
                 value={queryInput}
                 onChange={(event) => {
-                  setQueryInput(event.target.value);
+                  if (activeEnvironmentId === null) return;
+                  pinActiveEnv();
+                  const next = event.target.value;
+                  setQueriesByEnv((prev) => ({
+                    ...prev,
+                    [activeEnvironmentId]: next,
+                  }));
                   setOffset(0);
                 }}
               />
@@ -1408,7 +1469,13 @@ export function LibraryPage({
                 size="sm"
                 value={tagFilter}
                 onChange={(event) => {
-                  setTagFilter(event.target.value);
+                  if (activeEnvironmentId === null) return;
+                  pinActiveEnv();
+                  const next = event.target.value;
+                  setTagFiltersByEnv((prev) => ({
+                    ...prev,
+                    [activeEnvironmentId]: next,
+                  }));
                   setOffset(0);
                 }}
               />
@@ -1453,7 +1520,15 @@ export function LibraryPage({
                   placeholder={gt("Ask a question about the selected entries…")}
                   size="sm"
                   value={draftQuestion}
-                  onChange={(event) => setDraftQuestion(event.target.value)}
+                  onChange={(event) => {
+                    if (activeEnvironmentId === null) return;
+                    pinActiveEnv();
+                    const next = event.target.value;
+                    setDraftQuestionsByEnv((prev) => ({
+                      ...prev,
+                      [activeEnvironmentId]: next,
+                    }));
+                  }}
                 />
               </div>
               <Button
@@ -1507,7 +1582,13 @@ export function LibraryPage({
                       </EmptyHeader>
                       {canWrite ? (
                         <EmptyContent>
-                          <Button size="sm" onClick={() => setCreateOpen(true)}>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              pinActiveEnv();
+                              setCreateOpen(true);
+                            }}
+                          >
                             <PlusIcon />
                             <T>New entry</T>
                           </Button>
@@ -1670,6 +1751,7 @@ export function LibraryPage({
       )}
 
       <LibraryCreateDialog
+        key={`create:${activeEnvironmentId ?? "none"}`}
         open={createOpen}
         onFetchUrl={handleFetchUrl}
         onOpenChange={setCreateOpen}
@@ -1677,9 +1759,18 @@ export function LibraryPage({
       />
 
       <LibraryWkbImportDialog
+        key={`wkb:${activeEnvironmentId ?? "none"}`}
         open={wkbOpen}
         onImport={handleImportFromWkb}
         onOpenChange={setWkbOpen}
+      />
+
+      <LibraryFeedsDialog
+        key={`feeds:${activeEnvironmentId ?? "none"}`}
+        canWrite={canWrite}
+        environmentId={activeEnvironmentId}
+        open={feedsOpen}
+        onOpenChange={setFeedsOpen}
       />
     </SidebarInset>
   );

@@ -63,15 +63,26 @@ export function resolveCloudPublicConfig(): CloudPublicConfig {
 
 let desktopRelayTelemetry: boolean | null = null;
 
-/** Whether relay spans may be exported now; the desktop host may not know yet at startup. */
+function isExplicitWebTelemetryEnabled(): boolean {
+  const raw = (import.meta.env.VITE_T3CODE_TELEMETRY_ENABLED as string | undefined)
+    ?.trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true";
+}
+
+/** Whether relay spans may be exported now; default-off unless explicitly opted in. */
 export function relayTelemetryEnabled(): boolean | null {
-  if (typeof window === "undefined" || !window.desktopBridge) return true;
+  if (typeof window === "undefined" || !window.desktopBridge) {
+    return isExplicitWebTelemetryEnabled();
+  }
   desktopRelayTelemetry ??= window.desktopBridge.getRelayTelemetryEnabled();
   return desktopRelayTelemetry;
 }
 
 export function resolveRelayTracingConfig() {
   // The relay exporter is created during module initialization, so this must be synchronous.
+  // On desktop, null means main-process consent is positive pending login-shell discovery;
+  // RelayTracing.layer gates every span on `relayTelemetryEnabled() === true` until resolved.
   if (relayTelemetryEnabled() === false) {
     return null;
   }

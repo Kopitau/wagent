@@ -1,4 +1,5 @@
 import {
+  isSecretReference,
   LibraryAiError,
   type LibraryEntry,
   type LibraryEntryPageContract,
@@ -7,20 +8,115 @@ import {
   type LibraryReadingModelRoute,
   ProviderInstanceId,
 } from "@t3tools/contracts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as TextGenerationOperations from "@t3tools/provider-core/server/textGenerationOperations";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { hasClaudeManagedMcpConfig } from "../provider/Drivers/ClaudeHome.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGenerators from "../textGeneration/TextGenerators.ts";
 
 const MAX_CONTEXT_CHARS = 36_000;
+
+const CODEX_NO_PLUGIN_ARGS = [
+  "--config",
+  "features.connectors=false",
+  "--config",
+  "features.plugins=false",
+  "--config",
+  "features.apps=false",
+] as const;
+
+const CLAUDE_HOST_SESSION_VARIABLES = new Set([
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_HOST_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_MESSAGING_SOCKET",
+  "CLAUDE_CODE_MESSAGING_TOKEN",
+  "CLAUDE_CODE_EXECPATH",
+  "CLAUDE_CODE_DESKTOP_APP_VERSION",
+  "CLAUDE_EFFORT",
+  "CLAUDE_PID",
+  "CLAUDE_AGENT_SDK_VERSION",
+]);
+
+function codexMcpServersOff(names: ReadonlyArray<string>): string {
+  if (names.length === 0) return "mcp_servers={}";
+  return `mcp_servers={${names.map((name) => `${JSON.stringify(name)}={enabled=false}`).join(",")}}`;
+}
+
+function codexMcpServerOffFlags(names: ReadonlyArray<string>): ReadonlyArray<string> {
+  return names.flatMap((name) =>
+    !name.includes(".") && !name.includes("=")
+      ? ["--config", `mcp_servers.${name}.enabled=false`]
+      : [],
+  );
+}
+
+function parseEnabledCodexMcpServers(stdout: string): ReadonlyArray<string> | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout);
+    if (!Array.isArray(parsed)) return null;
+    const names: string[] = [];
+    for (const entry of parsed) {
+      if (
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as { enabled?: unknown }).enabled === true &&
+        typeof (entry as { name?: unknown }).name === "string"
+      ) {
+        names.push((entry as { name: string }).name);
+      }
+    }
+    return names;
+  } catch {
+    return null;
+  }
+}
+
+function buildIsolatedCliEnv(
+  hostEnv: Readonly<Record<string, string | undefined>>,
+  driver: "claudeAgent" | "codex",
+  instanceOverrides: Readonly<Record<string, string>>,
+): Record<string, string> {
+  // ProcessRunner uses extendEnv: true, so scrubbed variables MUST be explicitly blanked out
+  // rather than omitted so process.env values cannot bleed back into the child process.
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(hostEnv)) {
+    if (value === undefined) continue;
+    if (key.startsWith("T3CODE_")) {
+      out[key] = "";
+      continue;
+    }
+    if (driver === "claudeAgent" && CLAUDE_HOST_SESSION_VARIABLES.has(key)) {
+      out[key] = "";
+      continue;
+    }
+    out[key] = value;
+  }
+  if (driver === "claudeAgent") {
+    for (const key of CLAUDE_HOST_SESSION_VARIABLES) {
+      out[key] = "";
+    }
+  }
+  for (const [key, value] of Object.entries(instanceOverrides)) {
+    out[key] = value;
+  }
+  return out;
+}
 
 export const ParagraphAnalysisOutput = Schema.Struct({
   role: Schema.Literals([
@@ -157,6 +253,7 @@ export interface ExecuteReadingActionInput {
   readonly question?: string | undefined;
   readonly instanceId?: string | undefined;
   readonly model?: string | undefined;
+  readonly strictModel?: boolean | undefined;
 }
 
 export interface ExecuteReadingActionResult {
@@ -343,53 +440,105 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
     ProviderInstanceRegistry.ProviderInstanceRegistry,
   );
   const processRunnerOpt = yield* Effect.serviceOption(ProcessRunner.ProcessRunner);
+  const secretResolverOpt = yield* Effect.serviceOption(SecretResolver.SecretResolver);
+  const hostEnvOpt = yield* Effect.serviceOption(HostProcess.Environment);
+  const homeDirOpt = yield* Effect.serviceOption(HostProcess.HomeDirectory);
+  const pathOpt = yield* Effect.serviceOption(Path.Path);
   const fs = yield* FileSystem.FileSystem;
 
-  const listModels: ReadingAiRunner["Service"]["listModels"] = Effect.gen(function* () {
+  const collectModels = Effect.fn("ReadingAiRunner.collectModels")(function* (options: {
+    readonly failOnCatalogError: boolean;
+    readonly targetInstanceId?: string | undefined;
+  }) {
     const models: LibraryReadingModelOption[] = [];
 
     if (Option.isSome(settingsOpt) && Option.isSome(textGeneratorsOpt)) {
       const settings = yield* settingsOpt.value.getSettings.pipe(
-        Effect.orElseSucceed(() => undefined),
+        Effect.mapError(
+          (cause) =>
+            new LibraryAiError({
+              reason: `Could not read server settings for Reading AI: ${cause.message}`.slice(
+                0,
+                400,
+              ),
+            }),
+        ),
       );
-      if (settings) {
-        for (const [rawId, cfg] of Object.entries(settings.textGenerators)) {
-          if (!cfg.enabled) continue;
-          const instanceId = ProviderInstanceId.make(rawId);
-          const providerLabel = cfg.label ?? cfg.kind;
-          const listed = yield* textGeneratorsOpt.value
-            .listModels({ id: instanceId })
-            .pipe(Effect.orElseSucceed(() => ({ models: [] })));
-          if (listed.models.length > 0) {
-            for (const m of listed.models.slice(0, 12)) {
-              models.push({
-                instanceId: rawId,
-                model: m.id,
-                label: m.name || m.id,
-                providerLabel,
-                route: "direct_api",
-              });
-            }
-          } else {
+      for (const [rawId, cfg] of Object.entries(settings.textGenerators)) {
+        if (!cfg.enabled) continue;
+        if (options.targetInstanceId !== undefined && rawId !== options.targetInstanceId) {
+          continue;
+        }
+        const instanceId = ProviderInstanceId.make(rawId);
+        const providerLabel = cfg.label ?? cfg.kind;
+        const listedEffect = textGeneratorsOpt.value.listModels({ id: instanceId }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new LibraryAiError({
+                reason:
+                  `Could not enumerate models for '${rawId}': ${cause.detail ?? cause.message}`.slice(
+                    0,
+                    400,
+                  ),
+              }),
+          ),
+        );
+        const listed = options.failOnCatalogError
+          ? yield* listedEffect
+          : yield* listedEffect.pipe(Effect.orElseSucceed(() => ({ models: [] })));
+        if (listed.models.length > 0) {
+          for (const m of listed.models.slice(0, 12)) {
             models.push({
               instanceId: rawId,
-              model: "default",
-              label: `${providerLabel} (default)`,
+              model: m.id,
+              label: m.name || m.id,
               providerLabel,
               route: "direct_api",
             });
           }
+        } else {
+          models.push({
+            instanceId: rawId,
+            model: "default",
+            label: `${providerLabel} (default)`,
+            providerLabel,
+            route: "direct_api",
+          });
         }
       }
     }
 
     if (Option.isSome(registryOpt)) {
-      const instances = yield* registryOpt.value.listInstances.pipe(Effect.orElseSucceed(() => []));
+      const listInstancesEffect = registryOpt.value.listInstances.pipe(
+        Effect.mapError(
+          (cause) =>
+            new LibraryAiError({
+              reason: `Could not list CLI provider instances: ${String(cause)}`.slice(0, 400),
+            }),
+        ),
+      );
+      const instances = options.failOnCatalogError
+        ? yield* listInstancesEffect
+        : yield* listInstancesEffect.pipe(Effect.orElseSucceed(() => []));
       for (const instance of instances) {
-        const snapshot = yield* instance.snapshot.getSnapshot.pipe(
-          Effect.orElseSucceed(() => undefined),
+        const snapshotEffect = instance.snapshot.getSnapshot.pipe(
+          Effect.mapError(
+            (cause) =>
+              new LibraryAiError({
+                reason: `Could not read CLI provider snapshot: ${String(cause)}`.slice(0, 400),
+              }),
+          ),
         );
+        const snapshot = options.failOnCatalogError
+          ? yield* snapshotEffect
+          : yield* snapshotEffect.pipe(Effect.orElseSucceed(() => undefined));
         if (!snapshot || !snapshot.enabled || !snapshot.installed) continue;
+        if (
+          options.targetInstanceId !== undefined &&
+          snapshot.instanceId !== options.targetInstanceId
+        ) {
+          continue;
+        }
         if (snapshot.auth.status === "unauthenticated" || snapshot.status === "error") continue;
         if (snapshot.driver !== "claudeAgent" && snapshot.driver !== "codex") continue;
         for (const m of snapshot.models.slice(0, 8)) {
@@ -406,9 +555,117 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
     }
 
     return models;
-  }).pipe(Effect.withSpan("ReadingAiRunner.listModels"));
+  });
+
+  const listModels: ReadingAiRunner["Service"]["listModels"] = collectModels({
+    failOnCatalogError: false,
+  }).pipe(
+    Effect.orElseSucceed((): ReadonlyArray<LibraryReadingModelOption> => []),
+    Effect.withSpan("ReadingAiRunner.listModels"),
+  );
+
+  const resolveCliInstanceRuntime = Effect.fn("ReadingAiRunner.resolveCliInstanceRuntime")(
+    function* (instanceId: ProviderInstanceId, driver: "claudeAgent" | "codex") {
+      let binaryPath: string | undefined;
+      let homePath: string | undefined;
+      const envOverrides: Record<string, string> = {};
+
+      if (Option.isSome(settingsOpt)) {
+        const settings = yield* settingsOpt.value.getSettings.pipe(
+          Effect.mapError(
+            (cause) =>
+              new LibraryAiError({
+                reason:
+                  `Could not load server settings for CLI provider '${instanceId}': ${cause.message}`.slice(
+                    0,
+                    400,
+                  ),
+              }),
+          ),
+        );
+        const instanceCfg = settings.providerInstances[instanceId];
+        if (instanceCfg?.enabled === false) {
+          return yield* new LibraryAiError({
+            reason: `CLI provider instance '${instanceId}' is disabled.`,
+          });
+        }
+        if (instanceCfg) {
+          if (
+            instanceCfg.config &&
+            typeof instanceCfg.config === "object" &&
+            !Array.isArray(instanceCfg.config)
+          ) {
+            const rawCfg = instanceCfg.config as Record<string, unknown>;
+            if (typeof rawCfg.binaryPath === "string" && rawCfg.binaryPath.trim().length > 0) {
+              binaryPath = rawCfg.binaryPath.trim();
+            }
+            if (typeof rawCfg.homePath === "string" && rawCfg.homePath.trim().length > 0) {
+              homePath = rawCfg.homePath.trim();
+            }
+          }
+          if (Array.isArray(instanceCfg.environment)) {
+            for (const item of instanceCfg.environment) {
+              if (typeof item.value === "string" && !isSecretReference(item.value)) {
+                if (item.value.length > 0) {
+                  envOverrides[item.name] = item.value;
+                }
+              } else if (isSecretReference(item.value)) {
+                if (Option.isNone(secretResolverOpt)) {
+                  return yield* new LibraryAiError({
+                    reason: `SecretResolver is unavailable to resolve secret '${item.name}' for CLI provider '${instanceId}'.`,
+                  });
+                }
+                const resolved = yield* requireSettingsSecret(
+                  secretResolverOpt.value,
+                  item.value,
+                ).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new LibraryAiError({
+                        reason:
+                          `Could not resolve secret for CLI provider '${instanceId}': ${cause.message}`.slice(
+                            0,
+                            400,
+                          ),
+                      }),
+                  ),
+                );
+                envOverrides[item.name] = resolved;
+              }
+            }
+          }
+        }
+      }
+
+      if (homePath && Option.isSome(homeDirOpt)) {
+        const expanded = expandHomePath(homePath, homeDirOpt.value);
+        if (driver === "codex") {
+          envOverrides.CODEX_HOME = expanded;
+        } else {
+          envOverrides.CLAUDE_CONFIG_DIR = expanded;
+        }
+      }
+
+      const baseHostEnv = Option.isSome(hostEnvOpt) ? hostEnvOpt.value : process.env;
+      const env = buildIsolatedCliEnv(baseHostEnv, driver, envOverrides);
+      const command = binaryPath ?? (driver === "claudeAgent" ? "claude" : "codex");
+
+      const managedClaudeMcp =
+        driver === "claudeAgent" && Option.isSome(pathOpt) && Option.isSome(homeDirOpt)
+          ? yield* hasClaudeManagedMcpConfig().pipe(
+              Effect.provideService(Path.Path, pathOpt.value),
+              Effect.provideService(HostProcess.HomeDirectory, homeDirOpt.value),
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.orElseSucceed(() => false),
+            )
+          : false;
+
+      return { command, env, managedClaudeMcp };
+    },
+  );
 
   const runVerifiedCliInEmptyTempDir = Effect.fn("ReadingAiRunner.runCli")(function* (input: {
+    readonly instanceId: ProviderInstanceId;
     readonly driver: "claudeAgent" | "codex";
     readonly model: string;
     readonly prompt: string;
@@ -420,6 +677,7 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
       });
     }
     const runner = processRunnerOpt.value;
+    const runtime = yield* resolveCliInstanceRuntime(input.instanceId, input.driver);
 
     const stdout = yield* Effect.scoped(
       Effect.gen(function* () {
@@ -435,17 +693,74 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
             ),
           );
 
-        const command = input.driver === "claudeAgent" ? "claude" : "codex";
-        const args =
-          input.driver === "claudeAgent"
-            ? ["--print", "--tools", "", "--no-session-persistence", "--model", input.model]
-            : ["exec", "--sandbox", "read-only", "--skip-git-repo-check", "-m", input.model, "-"];
+        let args: string[];
+        if (input.driver === "claudeAgent") {
+          args = [
+            "--print",
+            "--settings",
+            '{"disableAllHooks":true}',
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            ...(runtime.managedClaudeMcp ? [] : ["--strict-mcp-config"]),
+            "--permission-mode",
+            "dontAsk",
+            "--model",
+            input.model,
+          ];
+        } else {
+          const mcpListRes = yield* runner
+            .run({
+              command: runtime.command,
+              args: ["mcp", "list", "--json"],
+              cwd: emptyCwd,
+              env: runtime.env,
+              timeout: "10 seconds",
+            })
+            .pipe(Effect.orElseSucceed(() => null));
+          if (!mcpListRes || mcpListRes.code !== 0) {
+            return yield* new LibraryAiError({
+              reason:
+                "Refused to run Codex reading CLI because enabled MCP servers could not be enumerated for isolation.",
+            });
+          }
+          const enabledMcpServers = parseEnabledCodexMcpServers(mcpListRes.stdout);
+          if (enabledMcpServers === null) {
+            return yield* new LibraryAiError({
+              reason:
+                "Refused to run Codex reading CLI because 'codex mcp list --json' returned invalid JSON.",
+            });
+          }
+          const mcpServersOff = codexMcpServersOff(enabledMcpServers);
+          args = [
+            "exec",
+            "--config",
+            mcpServersOff,
+            ...CODEX_NO_PLUGIN_ARGS,
+            ...codexMcpServerOffFlags(enabledMcpServers),
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--sandbox",
+            "read-only",
+            "--config",
+            "features.codex_hooks=false",
+            "--config",
+            "features.hooks=false",
+            "-m",
+            input.model,
+            "-",
+          ];
+        }
 
         const result = yield* runner
           .run({
-            command,
+            command: runtime.command,
             args,
             cwd: emptyCwd,
+            env: runtime.env,
             stdin: input.prompt,
             timeout: "120 seconds",
           })
@@ -462,7 +777,7 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
           return yield* new LibraryAiError({
             reason:
               result.stderr.trim().slice(-300) ||
-              `${command} exited with status ${String(result.code)}.`,
+              `${runtime.command} exited with status ${String(result.code)}.`,
           });
         }
         return result.stdout;
@@ -486,15 +801,45 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
   const executeAction: ReadingAiRunner["Service"]["executeAction"] = Effect.fn(
     "ReadingAiRunner.executeAction",
   )(function* (input) {
-    const available = yield* listModels;
-    const chosen =
-      (input.instanceId && input.model
-        ? available.find((opt) => opt.instanceId === input.instanceId && opt.model === input.model)
-        : undefined) ??
-      (input.instanceId
-        ? available.find((opt) => opt.instanceId === input.instanceId)
-        : undefined) ??
-      available[0];
+    const requestedInstanceId = input.instanceId?.trim() || undefined;
+    const requestedModel = input.model?.trim() || undefined;
+
+    if (input.strictModel === true && (!requestedInstanceId || !requestedModel)) {
+      return yield* new LibraryAiError({
+        reason: "Strict model execution requires both instanceId and model.",
+      });
+    }
+
+    const available = yield* collectModels({
+      failOnCatalogError: true,
+      targetInstanceId: requestedInstanceId,
+    });
+
+    if (requestedModel !== undefined) {
+      const exact = available.find(
+        (opt) =>
+          (requestedInstanceId === undefined || opt.instanceId === requestedInstanceId) &&
+          opt.model === requestedModel,
+      );
+      if (!exact) {
+        const targetDesc = requestedInstanceId
+          ? `${requestedInstanceId}/${requestedModel}`
+          : requestedModel;
+        return yield* new LibraryAiError({
+          reason: `Configured AI model '${targetDesc}' is unavailable or not authenticated.`,
+        });
+      }
+    }
+
+    const chosen = requestedInstanceId
+      ? requestedModel
+        ? available.find(
+            (opt) => opt.instanceId === requestedInstanceId && opt.model === requestedModel,
+          )
+        : available.find((opt) => opt.instanceId === requestedInstanceId)
+      : requestedModel
+        ? available.find((opt) => opt.model === requestedModel)
+        : available[0];
 
     if (!chosen) {
       return yield* new LibraryAiError({
@@ -543,14 +888,15 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
       };
     }
 
-    // Verified CLI subscription route: always runs inside a fresh empty temp cwd.
+    // Verified CLI subscription route: always runs inside a fresh empty temp cwd with full tool/MCP/plugin/hook isolation.
     if (Option.isNone(registryOpt)) {
       return yield* new LibraryAiError({
         reason: "ProviderInstanceRegistry is unavailable for CLI reading.",
       });
     }
+    const instanceId = ProviderInstanceId.make(chosen.instanceId);
     const instance = yield* registryOpt.value
-      .getInstance(ProviderInstanceId.make(chosen.instanceId))
+      .getInstance(instanceId)
       .pipe(Effect.orElseSucceed(() => undefined));
     const snapshot = instance
       ? yield* instance.snapshot.getSnapshot.pipe(Effect.orElseSucceed(() => undefined))
@@ -570,6 +916,7 @@ const make = Effect.fn("ReadingAiRunner.make")(function* () {
     const cliDriver: "claudeAgent" | "codex" =
       snapshot.driver === "claudeAgent" ? "claudeAgent" : "codex";
     const decoded = yield* runVerifiedCliInEmptyTempDir({
+      instanceId,
       driver: cliDriver,
       model: chosen.model,
       prompt,

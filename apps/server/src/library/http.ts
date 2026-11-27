@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  LIBRARY_UPLOAD_METADATA_HEADER,
   LIBRARY_UPLOAD_PDF_PATH,
   type AuthEnvironmentScope,
 } from "@t3tools/contracts";
@@ -60,6 +61,54 @@ function parseQueryTags(raw: string | null): ReadonlyArray<string> | undefined {
     .filter((part) => part.length > 0);
 }
 
+interface DecodedUploadMetadataHeader {
+  readonly fileName?: string | undefined;
+  readonly title?: string | undefined;
+  readonly note?: string | undefined;
+  readonly tags?: ReadonlyArray<string> | undefined;
+}
+
+const MAX_FRAMED_METADATA_BYTES = 1024 * 1024;
+
+function parseMetadataJsonObject(jsonText: string): DecodedUploadMetadataHeader | null {
+  try {
+    const parsed: unknown = JSON.parse(jsonText);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const obj = parsed as Record<string, unknown>;
+    const fileName =
+      typeof obj.fileName === "string" && obj.fileName.trim().length > 0
+        ? obj.fileName.trim()
+        : undefined;
+    const title =
+      typeof obj.title === "string" && obj.title.trim().length > 0 ? obj.title.trim() : undefined;
+    const note = typeof obj.note === "string" ? obj.note : undefined;
+    const tags = Array.isArray(obj.tags)
+      ? obj.tags
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0)
+      : undefined;
+    return { fileName, title, note, tags };
+  } catch {
+    return null;
+  }
+}
+
+function parseUploadMetadataHeader(
+  raw: string | undefined,
+): DecodedUploadMetadataHeader | "framed" | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return {};
+  if (trimmed === "framed") return "framed";
+  if (trimmed.length > 16_384) return null;
+  try {
+    const jsonText = Buffer.from(trimmed, "base64").toString("utf8");
+    return parseMetadataJsonObject(jsonText);
+  } catch {
+    return null;
+  }
+}
+
 function decodePathParam(raw: string): string | null {
   try {
     return decodeURIComponent(raw);
@@ -113,10 +162,28 @@ export const layerLibraryHttpRoutes = Layer.unwrap(
 
         // Fast-fail blatantly oversized Content-Length, while STILL enforcing exact streaming byte counts
         // below regardless of whether Content-Length is missing or understated.
+        const headerMetadata = parseUploadMetadataHeader(
+          request.headers[LIBRARY_UPLOAD_METADATA_HEADER],
+        );
+        if (headerMetadata === null) {
+          return HttpServerResponse.jsonUnsafe(
+            {
+              error: "validation",
+              field: "metadata",
+              message: "Invalid x-t3-library-metadata header.",
+            },
+            { status: 400 },
+          );
+        }
+
+        const maxWireBytes =
+          headerMetadata === "framed"
+            ? LIBRARY_MAX_PDF_UPLOAD_BYTES + MAX_FRAMED_METADATA_BYTES + 4
+            : LIBRARY_MAX_PDF_UPLOAD_BYTES;
         const rawContentLength = request.headers["content-length"];
         if (rawContentLength !== undefined) {
           const declared = Number(rawContentLength);
-          if (Number.isFinite(declared) && declared > LIBRARY_MAX_PDF_UPLOAD_BYTES) {
+          if (Number.isFinite(declared) && declared > maxWireBytes) {
             return HttpServerResponse.jsonUnsafe(
               {
                 error: "upload_too_large",
@@ -127,12 +194,6 @@ export const layerLibraryHttpRoutes = Layer.unwrap(
             );
           }
         }
-
-        const params = url.value.searchParams;
-        const fileName = params.get("fileName")?.trim() || "document.pdf";
-        const title = params.get("title")?.trim() || undefined;
-        const note = params.get("note") ?? undefined;
-        const tags = parseQueryTags(params.get("tags"));
 
         const chunkQueue = yield* Queue.bounded<Option.Option<Uint8Array>>(4);
         const streamErrorRef: { current: unknown; failed: boolean } = {
@@ -153,9 +214,115 @@ export const layerLibraryHttpRoutes = Layer.unwrap(
         );
 
         const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
+
+        let resolvedMetadata: DecodedUploadMetadataHeader =
+          headerMetadata === "framed" ? {} : headerMetadata;
+        let leftoverPdfBytes: Uint8Array | null = null;
+
+        if (headerMetadata === "framed") {
+          const framedOutcome = yield* Effect.tryPromise({
+            try: async () => {
+              const headerBuf = new Uint8Array(4);
+              let headerFilled = 0;
+              let pendingChunk: Uint8Array | null = null;
+              let pendingOffset = 0;
+
+              while (headerFilled < 4) {
+                if (pendingChunk === null || pendingOffset >= pendingChunk.byteLength) {
+                  const next = await runPromise(Queue.take(chunkQueue));
+                  if (Option.isNone(next)) {
+                    throw new Error("Truncated framed upload header.");
+                  }
+                  pendingChunk = next.value;
+                  pendingOffset = 0;
+                }
+                const take = Math.min(4 - headerFilled, pendingChunk.byteLength - pendingOffset);
+                headerBuf.set(
+                  pendingChunk.subarray(pendingOffset, pendingOffset + take),
+                  headerFilled,
+                );
+                headerFilled += take;
+                pendingOffset += take;
+              }
+
+              const metaLen = new DataView(headerBuf.buffer, headerBuf.byteOffset, 4).getUint32(
+                0,
+                false,
+              );
+              if (metaLen === 0 || metaLen > MAX_FRAMED_METADATA_BYTES) {
+                throw new Error("Framed metadata length out of bounds.");
+              }
+
+              // Single O(metaLen) allocation filled linearly without quadratic re-copying.
+              const metaBuf = new Uint8Array(metaLen);
+              let metaFilled = 0;
+              while (metaFilled < metaLen) {
+                if (pendingChunk === null || pendingOffset >= pendingChunk.byteLength) {
+                  const next = await runPromise(Queue.take(chunkQueue));
+                  if (Option.isNone(next)) {
+                    throw new Error("Truncated framed upload metadata.");
+                  }
+                  pendingChunk = next.value;
+                  pendingOffset = 0;
+                }
+                const take = Math.min(
+                  metaLen - metaFilled,
+                  pendingChunk.byteLength - pendingOffset,
+                );
+                metaBuf.set(pendingChunk.subarray(pendingOffset, pendingOffset + take), metaFilled);
+                metaFilled += take;
+                pendingOffset += take;
+              }
+
+              const metaText = Buffer.from(
+                metaBuf.buffer,
+                metaBuf.byteOffset,
+                metaBuf.byteLength,
+              ).toString("utf8");
+              const parsed = parseMetadataJsonObject(metaText);
+              if (!parsed) {
+                throw new Error("Invalid framed upload metadata JSON.");
+              }
+              const remainder =
+                pendingChunk !== null && pendingOffset < pendingChunk.byteLength
+                  ? pendingChunk.subarray(pendingOffset)
+                  : new Uint8Array(0);
+              return { parsed, remainder };
+            },
+            catch: (cause) =>
+              cause instanceof Error ? cause.message : "Invalid framed upload metadata.",
+          }).pipe(Effect.result);
+
+          if (framedOutcome._tag === "Failure") {
+            yield* Fiber.interrupt(producer).pipe(Effect.ignore);
+            return HttpServerResponse.jsonUnsafe(
+              {
+                error: "validation",
+                field: "metadata",
+                message: framedOutcome.failure,
+              },
+              { status: 400 },
+            );
+          }
+          resolvedMetadata = framedOutcome.success.parsed;
+          leftoverPdfBytes =
+            framedOutcome.success.remainder.byteLength > 0 ? framedOutcome.success.remainder : null;
+        }
+
+        const params = url.value.searchParams;
+        const fileName =
+          resolvedMetadata.fileName ?? (params.get("fileName")?.trim() || "document.pdf");
+        const title = resolvedMetadata.title ?? (params.get("title")?.trim() || undefined);
+        const note = resolvedMetadata.note ?? params.get("note") ?? undefined;
+        const tags = resolvedMetadata.tags ?? parseQueryTags(params.get("tags"));
+
         const chunks: AsyncIterable<Uint8Array> = {
           async *[Symbol.asyncIterator]() {
             try {
+              if (leftoverPdfBytes !== null && leftoverPdfBytes.byteLength > 0) {
+                yield leftoverPdfBytes;
+                leftoverPdfBytes = null;
+              }
               while (true) {
                 const next = await runPromise(Queue.take(chunkQueue));
                 if (Option.isNone(next)) {

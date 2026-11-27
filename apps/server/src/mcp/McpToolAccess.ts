@@ -190,6 +190,37 @@ export const writes = <P, A, E, R>(
     () => orchestratingCaller,
   );
 
+/**
+ * Dispatches work to a host-level domain (such as Wagent) that does not enforce
+ * a calling thread's restricted `approval-required` or `plan` ceiling.
+ */
+export const writesFullAccess = <P, A, E, R>(
+  actionDescription: string,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) =>
+  declare(
+    (params: P) =>
+      orchestratingCaller.pipe(
+        Effect.tap((caller) => assertNotLinked(caller, actionDescription)),
+        Effect.tap((caller) =>
+          assertFullAccess(
+            caller,
+            `Cannot ${actionDescription}: caller runs in ${caller.limits.runtimeMode}/${caller.limits.interactionMode} mode, below full-access/default.`,
+          ),
+        ),
+        Effect.flatMap(() => handle(params)),
+      ),
+    () =>
+      orchestratingCaller.pipe(
+        Effect.tap((caller) =>
+          assertFullAccess(
+            caller,
+            `Cannot ${actionDescription}: caller runs in ${caller.limits.runtimeMode}/${caller.limits.interactionMode} mode, below full-access/default.`,
+          ),
+        ),
+      ),
+  );
+
 /** Requires handler capability checks, not thread control; linked work is refused the same way. */
 export const writesWithCapability = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(

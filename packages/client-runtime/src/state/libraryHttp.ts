@@ -1,4 +1,5 @@
 import {
+  LIBRARY_UPLOAD_METADATA_HEADER,
   LIBRARY_UPLOAD_PDF_PATH,
   LibraryUploadPdfResult,
   libraryItemPdfPath,
@@ -142,9 +143,20 @@ export const fetchEnvironmentLibraryPdfBytes = Effect.fn("clientRuntime.library.
   },
 );
 
+const UploadMetadataHeaderSchema = Schema.fromJsonString(
+  Schema.Struct({
+    fileName: Schema.String,
+    title: Schema.optional(Schema.String),
+    note: Schema.optional(Schema.String),
+    tags: Schema.optional(Schema.Array(Schema.String)),
+  }),
+);
+const encodeUploadMetadataJson = Schema.encodeEffect(UploadMetadataHeaderSchema);
+
 /**
  * Uploads a raw PDF to `POST /api/library/upload` on the target environment using
  * Cookie / Bearer / DPoP credentials and returns the created `LibraryEntry`.
+ * Metadata is sent in the `x-t3-library-metadata` header (never in URL query parameters).
  */
 export const uploadEnvironmentLibraryPdf = Effect.fn("clientRuntime.library.uploadPdf")(function* (
   input: UploadLibraryPdfInput,
@@ -153,13 +165,22 @@ export const uploadEnvironmentLibraryPdf = Effect.fn("clientRuntime.library.uplo
   LibraryPdfHttpError | import("../rpc/http.ts").RemoteEnvironmentAuthFetchError,
   import("../connection/supervisor.ts").EnvironmentSupervisor
 > {
-  const params = new URLSearchParams();
-  params.set("fileName", input.fileName);
-  if (input.title?.trim()) params.set("title", input.title.trim());
-  if (input.note !== undefined && input.note.length > 0) params.set("note", input.note);
-  if (input.tags && input.tags.length > 0) params.set("tags", input.tags.join(","));
-
-  const bodyBytes =
+  const metadataJson = yield* encodeUploadMetadataJson({
+    fileName: input.fileName,
+    ...(input.title?.trim() ? { title: input.title.trim() } : {}),
+    ...(input.note !== undefined && input.note.length > 0 ? { note: input.note } : {}),
+    ...(input.tags && input.tags.length > 0 ? { tags: [...input.tags] } : {}),
+  }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new LibraryPdfHttpError({
+          code: "validation",
+          message: "Failed to encode PDF upload metadata.",
+          cause,
+        }),
+    ),
+  );
+  const rawPdfBytes =
     input.bytes instanceof Uint8Array
       ? new Uint8Array(
           input.bytes.buffer as ArrayBuffer,
@@ -168,10 +189,24 @@ export const uploadEnvironmentLibraryPdf = Effect.fn("clientRuntime.library.uplo
         )
       : new Uint8Array(input.bytes);
 
+  // Frame [4-byte uint32BE metaLen][UTF-8 JSON][PDF], escaping '%' and padding >= 1,100 bytes
+  // so bytes 0..1023 never contain '%PDF-' and older servers fail closed (400) instead of dropping notes.
+  const paddedMetadataJson = metadataJson.replaceAll("%", "\\u0025").padEnd(1_100, " ");
+  const metaBytes = new TextEncoder().encode(paddedMetadataJson);
+  const bodyBytes = new Uint8Array(4 + metaBytes.byteLength + rawPdfBytes.byteLength);
+  const view = new DataView(bodyBytes.buffer);
+  view.setUint32(0, metaBytes.byteLength, false);
+  bodyBytes.set(metaBytes, 4);
+  bodyBytes.set(rawPdfBytes, 4 + metaBytes.byteLength);
+  const headers: Record<string, string> = {
+    "content-type": "application/octet-stream",
+    [LIBRARY_UPLOAD_METADATA_HEADER]: "framed",
+  };
+
   const { response } = yield* executeConnectedEnvironmentRawHttpFetch({
     method: "POST",
-    pathAndQuery: `${LIBRARY_UPLOAD_PDF_PATH}?${params.toString()}`,
-    headers: { "content-type": "application/pdf" },
+    pathAndQuery: LIBRARY_UPLOAD_PDF_PATH,
+    headers,
     body: bodyBytes,
     signal: input.signal,
   });

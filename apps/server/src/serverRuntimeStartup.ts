@@ -148,6 +148,9 @@ export const makeCommandGate = Effect.gen(function* () {
 
 const recordStartupHeartbeat = Effect.gen(function* () {
   const analytics = yield* AnalyticsService.AnalyticsService;
+  if (analytics.isEnabled !== undefined && !(yield* analytics.isEnabled)) {
+    return;
+  }
   const projects = yield* ProjectService.ProjectService;
   const threads = yield* ThreadManagement.ThreadManagementService;
 
@@ -171,11 +174,13 @@ const recordStartupHeartbeat = Effect.gen(function* () {
     ),
   );
 
-  yield* analytics.record("server.boot.heartbeat", {
+  const recorded = yield* analytics.record("server.boot.heartbeat", {
     threadCount,
     projectCount,
   });
-  yield* analytics.recordOwners(yield* getServerOwners, "server");
+  if (recorded) {
+    yield* analytics.recordOwners(yield* getServerOwners, "server");
+  }
 });
 
 const getAutoBootstrapThreadModelSelection = (): ModelSelection => ({

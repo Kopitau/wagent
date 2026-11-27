@@ -1,11 +1,14 @@
 import {
   LibraryComposeDraftInput,
   LibraryComposeDraftResult,
+  LibraryDeleteFeedInput,
+  LibraryDeleteFeedResult,
   LibraryDeleteInput,
   LibraryDeleteReadingQuestionInput,
   LibraryDeleteReadingQuestionResult,
   LibraryDeleteResult,
   LibraryEntry,
+  LibraryFeedContract,
   LibraryFetchUrlInput,
   LibraryFetchUrlResult,
   LibraryGetInput,
@@ -18,6 +21,7 @@ import {
   LibraryImportFromWkbResult,
   LibraryImportGuideInput,
   LibraryImportTextFileInput,
+  LibraryListFeedsResult,
   LibraryListInput,
   LibraryListReadingModelsResult,
   LibraryListResult,
@@ -26,9 +30,14 @@ import {
   LibraryReadingQuestionContract,
   LibraryReadingStateResult,
   LibraryRpcError,
+  LibraryRunFeedNowInput,
+  LibraryRunFeedNowResult,
   LibraryRunReadingAiActionInput,
   LibraryRunReadingAiActionResult,
+  LibraryRunWorkHarvestInput,
+  LibraryRunWorkHarvestResult,
   LibrarySaveInput,
+  LibrarySetFeedEnabledInput,
   LibrarySetReadingPositionInput,
   LibrarySetReadingPositionResult,
   LibrarySetReadingPreferenceInput,
@@ -38,6 +47,7 @@ import {
   LibrarySyncWkbAnnotationsResult,
   LibraryUpdateImaConfigInput,
   LibraryUpdateInput,
+  LibraryUpsertFeedInput,
   LibraryUpsertReadingInsightInput,
   LibraryUpsertReadingParagraphInput,
   LibraryUpsertReadingQuestionInput,
@@ -812,6 +822,12 @@ export const WS_METHODS = {
   libraryImaStatus: "library.imaStatus",
   libraryUpdateImaConfig: "library.updateImaConfig",
   libraryImaSearch: "library.imaSearch",
+  libraryListFeeds: "library.listFeeds",
+  libraryUpsertFeed: "library.upsertFeed",
+  librarySetFeedEnabled: "library.setFeedEnabled",
+  libraryDeleteFeed: "library.deleteFeed",
+  libraryRunFeedNow: "library.runFeedNow",
+  libraryRunWorkHarvest: "library.runWorkHarvest",
 
   wagentStatus: "wagent.status",
   wagentSend: "wagent.send",
@@ -1929,6 +1945,41 @@ const WsLibraryImaSearchRpc = Rpc.make(WS_METHODS.libraryImaSearch, {
   error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
 });
 
+const WsLibraryListFeedsRpc = Rpc.make(WS_METHODS.libraryListFeeds, {
+  success: LibraryListFeedsResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryUpsertFeedRpc = Rpc.make(WS_METHODS.libraryUpsertFeed, {
+  payload: LibraryUpsertFeedInput,
+  success: LibraryFeedContract,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibrarySetFeedEnabledRpc = Rpc.make(WS_METHODS.librarySetFeedEnabled, {
+  payload: LibrarySetFeedEnabledInput,
+  success: LibraryFeedContract,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryDeleteFeedRpc = Rpc.make(WS_METHODS.libraryDeleteFeed, {
+  payload: LibraryDeleteFeedInput,
+  success: LibraryDeleteFeedResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryRunFeedNowRpc = Rpc.make(WS_METHODS.libraryRunFeedNow, {
+  payload: LibraryRunFeedNowInput,
+  success: LibraryRunFeedNowResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryRunWorkHarvestRpc = Rpc.make(WS_METHODS.libraryRunWorkHarvest, {
+  payload: LibraryRunWorkHarvestInput,
+  success: LibraryRunWorkHarvestResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
 const WsWagentStatusRpc = Rpc.make(WS_METHODS.wagentStatus, {
   success: WagentStatusResult,
   error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
@@ -2943,6 +2994,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsLibraryImaStatusRpc,
   WsLibraryUpdateImaConfigRpc,
   WsLibraryImaSearchRpc,
+  WsLibraryListFeedsRpc,
+  WsLibraryUpsertFeedRpc,
+  WsLibrarySetFeedEnabledRpc,
+  WsLibraryDeleteFeedRpc,
+  WsLibraryRunFeedNowRpc,
+  WsLibraryRunWorkHarvestRpc,
   WsWagentStatusRpc,
   WsWagentSendRpc,
   WsWagentAbortRpc,

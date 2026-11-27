@@ -1,4 +1,4 @@
-import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
+import { LIBRARY_UPLOAD_METADATA_HEADER, ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
 
 export const browserApiCorsAllowedMethods = ["GET", "HEAD", "POST", "OPTIONS"] as const;
 export const browserApiCorsAllowedHeaders = [
@@ -9,6 +9,7 @@ export const browserApiCorsAllowedHeaders = [
   "dpop",
   "range",
   ORCHESTRATION_PROTOCOL_HEADER,
+  LIBRARY_UPLOAD_METADATA_HEADER,
 ] as const;
 export const browserApiCorsExposedHeaders = [
   "accept-ranges",

@@ -217,6 +217,7 @@ describe("remote environment authorization", () => {
     Effect.gen(function* () {
       const fetch = recordedFetch(
         Response.json({ ticket: "ws-ticket", expiresAt: "2026-05-01T12:05:00.000Z" }),
+        Response.json({ ticket: "ws-ticket-2", expiresAt: "2026-05-01T12:05:00.000Z" }),
       );
       const proofs: Array<{ method: string; url: string; accessToken: string }> = [];
 
@@ -318,6 +319,7 @@ describe("remote environment authorization", () => {
     Effect.gen(function* () {
       const fetch = recordedFetch(
         Response.json({ ticket: "ws-ticket", expiresAt: "2026-05-01T12:05:00.000Z" }),
+        Response.json({ ticket: "ws-ticket-2", expiresAt: "2026-05-01T12:05:00.000Z" }),
       );
 
       const url = new URL(
@@ -344,6 +346,28 @@ describe("remote environment authorization", () => {
       expect(url.searchParams.get("clientDevice")).toBe(hashTelemetryId("device-1"));
       expect(url.toString()).not.toContain("user_connect");
       expect(url.toString()).not.toContain("device-1");
+
+      const defaultOffUrl = new URL(
+        yield* resolveRemoteWebSocketConnectionUrl({
+          wsBaseUrl: "wss://remote.example.com/",
+          httpBaseUrl: "https://remote.example.com/",
+          bearerToken: "bearer-token",
+        }).pipe(
+          provideRemoteHttp(fetch.fetchFn),
+          Effect.provideService(
+            ClientCapabilities.CloudSession,
+            ClientCapabilities.CloudSession.of({
+              identity: Effect.succeedSome({ accountId: "user_connect" }),
+              clerkToken: Effect.succeed("clerk-token"),
+            }),
+          ),
+          Effect.provideService(ClientCapabilities.AnalyticsDevice, {
+            id: Effect.succeedNone,
+          }),
+        ),
+      );
+      expect(defaultOffUrl.searchParams.get("clientOwner")).toBeNull();
+      expect(defaultOffUrl.searchParams.get("clientDevice")).toBeNull();
     }),
   );
 });

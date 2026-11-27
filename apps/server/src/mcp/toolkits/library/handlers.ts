@@ -115,6 +115,40 @@ export const layer = McpToolAccess.toLayer(
             Effect.mapError(mapLibraryWriteFailure),
           ),
       ),
+      library_run_feed: McpToolAccess.writes((input) =>
+        library
+          .runFeedNow({
+            id: input.feedId,
+          })
+          .pipe(
+            Effect.map((result) => ({
+              feedId: result.feed.id,
+              skippedPaused: result.skippedPaused,
+              fetchedCount: result.fetchedCount,
+              importedCount: result.importedCount,
+              deduplicatedCount: result.deduplicatedCount,
+              summarizedCount: result.summarizedCount,
+              budgetExhaustedCount: result.budgetExhaustedCount,
+              importedEntryIds: result.importedEntryIds,
+              errors: result.errors,
+            })),
+            Effect.mapError(mapLibraryWriteFailure),
+          ),
+      ),
+      library_work_harvest: McpToolAccess.writesFullAccess(
+        "harvest local git commits into wkb work",
+        (input) =>
+          library
+            .runWorkHarvest({
+              ...(input.project !== undefined ? { project: input.project } : {}),
+              ...(input.report !== undefined ? { report: input.report } : {}),
+              ...(input.files !== undefined ? { files: input.files } : {}),
+              ...(input.commits !== undefined ? { commits: input.commits } : {}),
+              ...(input.summary !== undefined ? { summary: input.summary } : {}),
+              ...(input.projectBlurb !== undefined ? { projectBlurb: input.projectBlurb } : {}),
+            })
+            .pipe(Effect.mapError(mapLibraryWriteFailure)),
+      ),
     };
   }),
 );

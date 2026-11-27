@@ -438,4 +438,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
       assert.deepEqual(capturedPaths, []);
     }),
   );
+
+  it.effect("stays disabled by default with zero outbound requests when unconfigured", () =>
+    Effect.gen(function* () {
+      const requestedUrls: Array<string> = [];
+      const client = HttpClient.make((request) =>
+        Effect.sync(() => {
+          requestedUrls.push(request.url);
+          return HttpClientResponse.fromWeb(request, new Response(null, { status: 204 }));
+        }),
+      );
+      const defaultLayer = AnalyticsService.layer.pipe(
+        Layer.provideMerge(
+          ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-telemetry-default-" }),
+        ),
+        Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+        Layer.provide(
+          Layer.mergeAll(
+            Layer.succeed(HostProcess.Platform, "darwin"),
+            Layer.succeed(HostProcess.Architecture, "arm64"),
+            Layer.succeed(HttpClient.HttpClient, client),
+            ManagedPolicy.layerTest(),
+          ),
+        ),
+      );
+
+      const recorded = yield* Effect.gen(function* () {
+        const analytics = yield* AnalyticsService.AnalyticsService;
+        const ok = yield* analytics.record("test.default.off", { index: 1 });
+        yield* analytics.recordOwners([{ source: "claude", ownerId: "a".repeat(64) }], "server");
+        yield* analytics.flush;
+        return ok;
+      }).pipe(Effect.provide(defaultLayer));
+
+      assert.equal(recorded, false);
+      assert.deepEqual(requestedUrls, []);
+    }),
+  );
 });

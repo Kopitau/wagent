@@ -191,6 +191,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.libraryGetReadingState]: AuthOrchestrationReadScope,
   [WS_METHODS.libraryListReadingModels]: AuthOrchestrationReadScope,
   [WS_METHODS.libraryImaStatus]: AuthOrchestrationReadScope,
+  [WS_METHODS.libraryListFeeds]: AuthOrchestrationReadScope,
   [WS_METHODS.shellOpenInEditor]: AuthOrchestrationOperateScope,
   [WS_METHODS.filesystemBrowse]: AuthFilesystemReadScope,
   [WS_METHODS.workspaceListFolders]: AuthFilesystemReadScope,

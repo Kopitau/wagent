@@ -118,6 +118,11 @@ import {
   SettingsEnvironmentSourceControlRouteScreen,
 } from "./features/settings/SettingsServerControlsRouteScreen";
 import {
+  MobileLibraryItemRouteScreen,
+  MobileLibraryRouteScreen,
+} from "./features/library/MobileLibraryScreens";
+import { MobileWagentRouteScreen } from "./features/wagent/MobileWagentScreen";
+import {
   SettingsScheduledTasksRouteScreen,
   SettingsScheduledTaskNewRouteScreen,
   SettingsScheduledTaskEditRouteScreen,
@@ -195,6 +200,9 @@ const ROUTE_TITLES: Readonly<Record<string, string>> = {
   SettingsVoice: msg("Voice"),
   SettingsFollowUp: msg("Chat", { $context: "noun, settings page title" }),
   SettingsScheduledTasks: msg("Scheduled tasks"),
+  SettingsLibrary: msg("Library"),
+  SettingsLibraryItem: msg("Library entry"),
+  SettingsWagent: msg("Wagent"),
   SettingsScheduledTaskNew: msg("New scheduled task"),
   SettingsScheduledTaskEdit: msg("Edit scheduled task"),
   SettingsScheduledTaskBranch: msg("Base branch"),
@@ -376,6 +384,21 @@ const SETTINGS_SCREENS = {
       ...settingsPage(),
       headerTitleStyle: { fontSize: 16, fontWeight: "800" },
     },
+  }),
+  SettingsLibrary: createNativeStackScreen({
+    screen: MobileLibraryRouteScreen,
+    linking: "settings/library",
+    options: settingsPage(),
+  }),
+  SettingsLibraryItem: createNativeStackScreen({
+    screen: MobileLibraryItemRouteScreen,
+    linking: "settings/library/:environmentId/:itemId",
+    options: settingsPage(),
+  }),
+  SettingsWagent: createNativeStackScreen({
+    screen: MobileWagentRouteScreen,
+    linking: "settings/wagent",
+    options: settingsPage(),
   }),
   SettingsScheduledTaskNew: createNativeStackScreen({
     screen: SettingsScheduledTaskNewRouteScreen,

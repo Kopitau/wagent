@@ -67,6 +67,7 @@ export const WagentConfigView = Schema.Struct({
   hasTelegramBotToken: Schema.Boolean,
   hasDeepseekApiKey: Schema.Boolean,
   hasWkbToken: Schema.Boolean,
+  hasProxyCredentials: Schema.optional(Schema.Boolean),
 });
 export type WagentConfigView = typeof WagentConfigView.Type;
 
@@ -214,6 +215,7 @@ export const WagentUpdateConfigInput = Schema.Struct({
   telegramBotToken: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(512)))),
   deepseekApiKey: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(512)))),
   wkbToken: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(512)))),
+  expectedKbUrl: Schema.optional(Schema.String.check(Schema.isMaxLength(2048))),
 });
 export type WagentUpdateConfigInput = typeof WagentUpdateConfigInput.Type;
 

@@ -4,6 +4,7 @@ export type WkbInferredKind = "web" | "wechat" | "pdf" | "video" | "epub" | "fil
 
 export interface WkbInstallationStatus {
   readonly available: boolean;
+  readonly syncAvailable: boolean;
   readonly mode: WkbMode;
   readonly uvPath: string | null;
   readonly kbDir: string | null;
@@ -13,6 +14,7 @@ export interface WkbInstallationStatus {
 export interface DetectWkbOptions {
   readonly kbDir?: string | undefined;
   readonly remoteUrl?: string | undefined;
+  readonly hasRemoteToken?: boolean | undefined;
   readonly uvBinary?: string | undefined;
   readonly env?: Readonly<Record<string, string | undefined>> | undefined;
   readonly homeDir?: string | undefined;
@@ -25,11 +27,19 @@ export interface RunWkbExportInput {
   readonly pdf?: boolean | undefined;
 }
 
+export interface WkbDnsLookupEntry {
+  readonly address: string;
+  readonly family: 4 | 6;
+}
+
 export interface RunWkbExportOptions {
   readonly kbDir: string;
   readonly uvBinary?: string | undefined;
   readonly env?: Readonly<Record<string, string | undefined>> | undefined;
   readonly allowedLocalRoots?: ReadonlyArray<string> | undefined;
+  readonly dnsResolver?:
+    | ((hostname: string) => Promise<ReadonlyArray<WkbDnsLookupEntry>>)
+    | undefined;
   readonly timeoutMs?: number | undefined;
   readonly signal?: AbortSignal | undefined;
   readonly maxMarkdownBytes?: number | undefined;
@@ -83,6 +93,7 @@ export interface WkbAnnotateResult {
   readonly mode: "remote" | "local";
   readonly summary: string;
   readonly syncedCount: number;
+  readonly queued?: boolean | undefined;
 }
 
 export interface RunWkbSubmitInput {
@@ -90,9 +101,33 @@ export interface RunWkbSubmitInput {
   readonly url?: string | null | undefined;
   readonly text: string;
   readonly note?: string | undefined;
+  readonly kind?: "article" | "video" | "pdf" | "epub" | "text" | "image" | "audio" | undefined;
+  readonly tags?: ReadonlyArray<string> | undefined;
 }
 
 export interface WkbSubmitResult {
   readonly mode: "remote" | "local";
+  readonly summary: string;
+  readonly queued?: boolean | undefined;
+}
+
+export interface WkbWorkFileInput {
+  readonly name: "overview" | "decisions" | "pitfalls" | "timeline";
+  readonly content: string;
+  readonly base?: string | undefined;
+}
+
+export interface RunWkbWorkHarvestInput {
+  readonly project?: string | undefined;
+  readonly report?: string | undefined;
+  readonly files?: ReadonlyArray<WkbWorkFileInput> | undefined;
+  readonly projectBlurb?: string | undefined;
+  readonly commits?: string | undefined;
+  readonly summary?: string | undefined;
+}
+
+export interface WkbWorkHarvestResult {
+  readonly mode: "remote" | "local";
+  readonly project: string | null;
   readonly summary: string;
 }

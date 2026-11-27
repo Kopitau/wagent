@@ -28,13 +28,15 @@ import {
   TelegramClient,
   WagentBridgeError,
   WagentRuntime,
+  sanitizeProxyUrl,
   type TelegramPort,
   type WagentBridgeEvent,
   type WagentExecutor,
   type WagentSecrets,
 } from "@t3tools/wagent-bridge";
-import { WkbBridgeError, type runWkbExport } from "@t3tools/wkb-bridge";
+import { WkbBridgeError, canonicalizeWkbEndpointUrl, type runWkbExport } from "@t3tools/wkb-bridge";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -42,6 +44,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
+import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -54,9 +57,19 @@ import * as WkbBridgeService from "../wkb/WkbBridgeService.ts";
 const SECRET_TELEGRAM_BOT_TOKEN = "wagent-telegram-bot-token";
 const SECRET_DEEPSEEK_API_KEY = "wagent-deepseek-api-key";
 const SECRET_WKB_TOKEN = "wagent-wkb-token";
+const SECRET_PROXY_URL = "wagent-proxy-url";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+
+const BoundWkbSecretJson = Schema.fromJsonString(
+  Schema.Struct({
+    token: Schema.String,
+    kbUrl: Schema.String,
+  }),
+);
+const encodeBoundWkbSecret = Schema.encodeSync(BoundWkbSecretJson);
+const decodeBoundWkbSecret = Schema.decodeOption(BoundWkbSecretJson);
 
 export interface WagentServiceTestOverrides {
   readonly executor?: WagentExecutor | undefined;
@@ -157,7 +170,6 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
   const path = yield* Path.Path;
   const env = yield* HostProcess.Environment;
   const homeDir = yield* HostProcess.HomeDirectory;
-  const cwd = yield* HostProcess.WorkingDirectory;
   const context = yield* Effect.context<never>();
   const runPromise = Effect.runPromiseWith(context);
 
@@ -167,10 +179,9 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
   const wkbStatus = yield* wkbBridge.status;
   const defaultKbDir = wkbStatus.kbDir ?? path.join(homeDir, "kb");
 
+  // Only resolve Wagent Pi runtime from explicit admin env or trusted home root, NEVER cwd.
   const agentDirCandidates = [
     env.T3CODE_WAGENT_AGENT_DIR,
-    path.resolve(cwd, "..", "agent"),
-    path.resolve(cwd, "agent"),
     path.join(homeDir, "Wagent", "agent"),
   ].filter((candidate): candidate is string => Boolean(candidate && candidate.trim()));
 
@@ -222,19 +233,90 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
     );
   };
 
-  const readSecretsEffect: Effect.Effect<WagentSecrets> = Effect.gen(function* () {
+  const extractBoundWkbToken = (
+    rawSecret: string,
+    expectedKbUrl: string,
+    persistedKbUrl: string | null,
+  ): string | undefined => {
+    const trimmed = rawSecret.trim();
+    if (!trimmed) return undefined;
+    const expectedNorm = canonicalizeWkbEndpointUrl(expectedKbUrl);
+    if (expectedNorm === null) return undefined;
+    if (trimmed.startsWith("{")) {
+      const parsed = decodeBoundWkbSecret(trimmed);
+      if (Option.isNone(parsed)) return undefined;
+      const boundNorm = canonicalizeWkbEndpointUrl(parsed.value.kbUrl);
+      if (boundNorm === null || boundNorm !== expectedNorm) {
+        return undefined;
+      }
+      const tok = parsed.value.token.trim();
+      return tok.length > 0 ? tok : undefined;
+    }
+    // Legacy plain-text token is ONLY valid when config.json explicitly persisted the matching kbUrl.
+    const persistedNorm =
+      persistedKbUrl !== null ? canonicalizeWkbEndpointUrl(persistedKbUrl) : null;
+    if (persistedNorm === null || persistedNorm !== expectedNorm) {
+      return undefined;
+    }
+    return trimmed;
+  };
+
+  let runtimeRef: WagentRuntime | null = null;
+
+  const readSecretsForConfigEffect = Effect.fn("WagentService.readSecretsForConfig")(function* (
+    targetKbUrl: string,
+  ): Effect.fn.Return<WagentSecrets> {
     const telegramBotToken = yield* readSecretString(SECRET_TELEGRAM_BOT_TOKEN);
     const deepseekApiKey = yield* readSecretString(SECRET_DEEPSEEK_API_KEY);
-    const wkbToken = yield* readSecretString(SECRET_WKB_TOKEN);
+    const rawWkbSecret = yield* readSecretString(SECRET_WKB_TOKEN);
+    const wkbToken =
+      rawWkbSecret !== undefined
+        ? extractBoundWkbToken(rawWkbSecret, targetKbUrl, runtimeRef?.persistedKbUrl ?? null)
+        : undefined;
+    const proxyUrl = yield* readSecretString(SECRET_PROXY_URL);
     return {
       ...(telegramBotToken !== undefined ? { telegramBotToken } : {}),
       ...(deepseekApiKey !== undefined ? { deepseekApiKey } : {}),
       ...(wkbToken !== undefined ? { wkbToken } : {}),
+      ...(proxyUrl !== undefined ? { proxyUrl } : {}),
     };
   });
 
+  const readSecretBytesStrict = (name: string) =>
+    secretStore.get(name).pipe(
+      Effect.mapError(
+        (cause) =>
+          new WagentRuntimeError({
+            reason: `Failed to read secret '${name}': ${cause.message}`.slice(0, 400),
+          }),
+      ),
+    );
+
+  const restoreSecretBytesStrict = (name: string, previous: Option.Option<Uint8Array>) =>
+    Option.match(previous, {
+      onNone: () =>
+        secretStore.remove(name).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WagentRuntimeError({
+                reason: `Failed to roll back secret '${name}': ${cause.message}`.slice(0, 400),
+              }),
+          ),
+        ),
+      onSome: (bytes) =>
+        secretStore.set(name, bytes).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WagentRuntimeError({
+                reason: `Failed to restore secret '${name}': ${cause.message}`.slice(0, 400),
+              }),
+          ),
+        ),
+    });
+
   const eventsPubSub = yield* PubSub.unbounded<WagentEvent>();
   const channelLock = yield* Semaphore.make(1);
+  const configMutationLock = yield* Semaphore.make(1);
   let telegramChannel: TelegramChannel | null = null;
   let activeTelegramToken: string | null = null;
 
@@ -243,18 +325,75 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
     homeDir,
     defaultKbDir,
     defaultAgentDir,
-    getSecrets: () => runPromise(readSecretsEffect),
+    env,
+    uvBinary: wkbStatus.uvPath ?? undefined,
+    getSecrets: () => runPromise(readSecretsForConfigEffect(runtime.config.kbUrl)),
+    resolveExecutionContext: () =>
+      runPromise(
+        configMutationLock.withPermits(1)(
+          Effect.gen(function* () {
+            const currentConfig = runtime.config;
+            const secrets = yield* readSecretsForConfigEffect(currentConfig.kbUrl);
+            return {
+              config: currentConfig,
+              secrets:
+                runtime.unmigratedLegacyProxyUrl !== null && secrets.proxyUrl === undefined
+                  ? { ...secrets, proxyUrl: runtime.unmigratedLegacyProxyUrl }
+                  : secrets,
+            };
+          }),
+        ),
+      ),
     executor: overrides?.executor,
     approvalTimeoutOverrideMs: overrides?.approvalTimeoutOverrideMs,
     wkbExportImpl: overrides?.wkbExportImpl,
   });
+  runtimeRef = runtime;
+
+  if (runtime.persistedKbUrl !== null) {
+    const canonicalPersisted = canonicalizeWkbEndpointUrl(runtime.persistedKbUrl);
+    const legacyWkbSecret = yield* readSecretString(SECRET_WKB_TOKEN);
+    if (
+      canonicalPersisted !== null &&
+      legacyWkbSecret !== undefined &&
+      !legacyWkbSecret.startsWith("{")
+    ) {
+      yield* writeOptionalSecret(
+        SECRET_WKB_TOKEN,
+        encodeBoundWkbSecret({ token: legacyWkbSecret, kbUrl: canonicalPersisted }),
+      ).pipe(Effect.ignore);
+    }
+  }
+
+  if (runtime.unmigratedLegacyProxyUrl !== null) {
+    const legacyProxy = runtime.unmigratedLegacyProxyUrl;
+    const existingProxyOpt = yield* readSecretBytesStrict(SECRET_PROXY_URL).pipe(Effect.result);
+    if (existingProxyOpt._tag === "Success") {
+      const migrateRes = yield* (
+        Option.isNone(existingProxyOpt.success)
+          ? writeOptionalSecret(SECRET_PROXY_URL, legacyProxy)
+          : Effect.void
+      ).pipe(Effect.result);
+      if (migrateRes._tag === "Success") {
+        yield* Effect.tryPromise({
+          try: () => runtime.confirmLegacyProxyMigrated(),
+          catch: (error) => mapWagentError(error),
+        }).pipe(Effect.ignore);
+      }
+    }
+  } else {
+    yield* Effect.tryPromise({
+      try: () => runtime.flushPendingConfigRewrite(),
+      catch: (error) => mapWagentError(error),
+    }).pipe(Effect.ignore);
+  }
 
   const buildStatus = Effect.fn("WagentService.buildStatus")(function* () {
-    const secrets = yield* readSecretsEffect;
     const snapshot = yield* Effect.tryPromise({
       try: () => runtime.getSnapshot(),
       catch: (error) => mapWagentError(error),
     });
+    const secrets = yield* readSecretsForConfigEffect(snapshot.config.kbUrl);
     const configView: WagentConfigView = {
       workspace: snapshot.config.workspace,
       model: { ...snapshot.config.model },
@@ -268,6 +407,7 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
       hasTelegramBotToken: Boolean(secrets.telegramBotToken),
       hasDeepseekApiKey: Boolean(secrets.deepseekApiKey),
       hasWkbToken: Boolean(secrets.wkbToken),
+      hasProxyCredentials: Boolean(secrets.proxyUrl),
     };
     return {
       running: snapshot.running,
@@ -288,7 +428,7 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
 
   const syncTelegramChannel = channelLock.withPermits(1)(
     Effect.gen(function* () {
-      const secrets = yield* readSecretsEffect;
+      const secrets = yield* readSecretsForConfigEffect(runtime.config.kbUrl);
       const shouldRun = runtime.config.telegramEnabled && Boolean(secrets.telegramBotToken);
       const desiredToken = shouldRun ? (secrets.telegramBotToken ?? null) : null;
 
@@ -327,9 +467,9 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
             const pendingCount = runtime.approvalHub.listPending().length;
             return `模型: ${runtime.config.model.provider}/${runtime.config.model.id}\n工作区: ${runtime.config.workspace}\n待确认删除: ${pendingCount}`;
           },
-          dispatchFromTelegram: async ({ prompt, onFile }) => {
+          dispatchFromTelegram: ({ prompt, onFile }) => {
             const queued = runtime.enqueue({ prompt, source: "telegram", onFile });
-            return queued.completed;
+            return { runId: queued.run.id, completed: queued.completed };
           },
           abortActive: () => runtime.abort(),
           resetSession: async () => {
@@ -374,13 +514,13 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
   yield* Effect.acquireRelease(syncTelegramChannel, () =>
     Effect.gen(function* () {
       unsubscribeRuntime();
+      yield* Effect.promise(() => runtime.dispose()).pipe(Effect.ignore);
       if (telegramChannel) {
         const existing = telegramChannel;
         telegramChannel = null;
         activeTelegramToken = null;
         yield* Effect.promise(() => existing.stop()).pipe(Effect.ignore);
       }
-      yield* Effect.promise(() => runtime.dispose()).pipe(Effect.ignore);
     }),
   );
 
@@ -543,13 +683,76 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
   const updateConfig: WagentService["Service"]["updateConfig"] = Effect.fn(
     "WagentService.updateConfig",
   )(function* (input) {
-    yield* writeOptionalSecret(SECRET_TELEGRAM_BOT_TOKEN, input.telegramBotToken);
-    yield* writeOptionalSecret(SECRET_DEEPSEEK_API_KEY, input.deepseekApiKey);
-    yield* writeOptionalSecret(SECRET_WKB_TOKEN, input.wkbToken);
+    yield* configMutationLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (input.expectedKbUrl !== undefined) {
+          const expectedNorm =
+            canonicalizeWkbEndpointUrl(input.expectedKbUrl) ?? input.expectedKbUrl.trim();
+          const currentNorm =
+            canonicalizeWkbEndpointUrl(runtime.config.kbUrl) ?? runtime.config.kbUrl.trim();
+          if (expectedNorm !== currentNorm) {
+            return yield* new WagentValidationError({
+              reason:
+                "Remote wkb MCP URL changed concurrently; reload Wagent settings before modifying the WKB token or URL.",
+            });
+          }
+        }
 
-    yield* Effect.tryPromise({
-      try: () =>
-        runtime.updateConfig({
+        let sanitizedProxyForConfig: string | undefined;
+        let nextProxySecret: string | null | undefined;
+
+        const pendingLegacyProxy = runtime.unmigratedLegacyProxyUrl;
+        let shouldConfirmLegacyProxyAfterWrite = false;
+
+        if (input.proxy !== undefined) {
+          const parsedProxy = yield* Effect.try({
+            try: () => sanitizeProxyUrl(input.proxy!),
+            catch: (error) => mapWagentError(error),
+          });
+          sanitizedProxyForConfig = parsedProxy.redacted;
+          if (parsedProxy.hasCredentials) {
+            nextProxySecret = input.proxy.trim();
+            shouldConfirmLegacyProxyAfterWrite = pendingLegacyProxy !== null;
+          } else if (!parsedProxy.redacted) {
+            nextProxySecret = null;
+            shouldConfirmLegacyProxyAfterWrite = pendingLegacyProxy !== null;
+          } else if (pendingLegacyProxy !== null) {
+            const legacyRedacted = yield* Effect.try({
+              try: () => sanitizeProxyUrl(pendingLegacyProxy).redacted,
+              catch: (error) => mapWagentError(error),
+            }).pipe(Effect.orElseSucceed(() => ""));
+            if (legacyRedacted === parsedProxy.redacted) {
+              // Web UI echoed back the redacted proxy host: migrate pending legacy credentials first!
+              const existingProxyOpt = yield* readSecretBytesStrict(SECRET_PROXY_URL);
+              if (Option.isNone(existingProxyOpt)) {
+                nextProxySecret = pendingLegacyProxy;
+              }
+            } else {
+              nextProxySecret = null;
+            }
+            shouldConfirmLegacyProxyAfterWrite = true;
+          } else {
+            const existingProxyOpt = yield* readSecretBytesStrict(SECRET_PROXY_URL);
+            if (Option.isSome(existingProxyOpt)) {
+              const existingProxyStr = textDecoder.decode(existingProxyOpt.value).trim();
+              const prevRedacted = yield* Effect.try({
+                try: () => sanitizeProxyUrl(existingProxyStr).redacted,
+                catch: (error) => mapWagentError(error),
+              }).pipe(Effect.orElseSucceed(() => ""));
+              if (prevRedacted !== parsedProxy.redacted) {
+                nextProxySecret = null;
+              }
+            }
+          }
+        } else if (pendingLegacyProxy !== null) {
+          const existingProxyOpt = yield* readSecretBytesStrict(SECRET_PROXY_URL);
+          if (Option.isNone(existingProxyOpt)) {
+            nextProxySecret = pendingLegacyProxy;
+          }
+          shouldConfirmLegacyProxyAfterWrite = true;
+        }
+
+        const configPatch = {
           ...(input.workspace !== undefined ? { workspace: input.workspace } : {}),
           ...(input.model !== undefined
             ? {
@@ -569,11 +772,135 @@ const make = Effect.fn("WagentService.make")(function* (overrides?: WagentServic
             ? { telegramEnabled: input.telegramEnabled }
             : {}),
           ...(input.allowedUserIds !== undefined ? { allowedUserIds: input.allowedUserIds } : {}),
-          ...(input.proxy !== undefined ? { proxy: input.proxy } : {}),
+          ...(sanitizedProxyForConfig !== undefined ? { proxy: sanitizedProxyForConfig } : {}),
           ...(input.agentDir !== undefined ? { agentDir: input.agentDir } : {}),
-        }),
-      catch: (error) => mapWagentError(error),
-    });
+        };
+
+        // Pure validation first so invalid config never touches secrets or disk.
+        const validatedNextConfig = yield* Effect.try({
+          try: () => runtime.validatePatch(configPatch),
+          catch: (error) => mapWagentError(error),
+        });
+
+        const secretMutations: Array<{
+          readonly name: string;
+          readonly value: string | null;
+        }> = [];
+        if (input.telegramBotToken !== undefined) {
+          secretMutations.push({
+            name: SECRET_TELEGRAM_BOT_TOKEN,
+            value: input.telegramBotToken,
+          });
+        }
+        if (input.deepseekApiKey !== undefined) {
+          secretMutations.push({
+            name: SECRET_DEEPSEEK_API_KEY,
+            value: input.deepseekApiKey,
+          });
+        }
+        if (input.wkbToken !== undefined) {
+          const trimmedWkb = input.wkbToken === null ? "" : input.wkbToken.trim();
+          const canonicalNextKbUrl = canonicalizeWkbEndpointUrl(validatedNextConfig.kbUrl);
+          if (trimmedWkb && canonicalNextKbUrl === null) {
+            return yield* new WagentValidationError({
+              reason: "wkbToken requires a valid HTTP/HTTPS kbUrl.",
+            });
+          }
+          secretMutations.push({
+            name: SECRET_WKB_TOKEN,
+            value:
+              trimmedWkb && canonicalNextKbUrl !== null
+                ? encodeBoundWkbSecret({ token: trimmedWkb, kbUrl: canonicalNextKbUrl })
+                : null,
+          });
+        } else if (
+          input.kbUrl !== undefined &&
+          canonicalizeWkbEndpointUrl(validatedNextConfig.kbUrl) !==
+            canonicalizeWkbEndpointUrl(runtime.config.kbUrl)
+        ) {
+          const existingWkbOpt = yield* readSecretBytesStrict(SECRET_WKB_TOKEN);
+          if (Option.isSome(existingWkbOpt)) {
+            secretMutations.push({
+              name: SECRET_WKB_TOKEN,
+              value: null,
+            });
+          }
+        }
+        if (nextProxySecret !== undefined) {
+          secretMutations.push({
+            name: SECRET_PROXY_URL,
+            value: nextProxySecret,
+          });
+        }
+
+        // Strict read of ONLY modified secret keys so untouched secrets are never deleted on rollback.
+        const previousModifiedSecrets = new Map<string, Option.Option<Uint8Array>>();
+        for (const item of secretMutations) {
+          const prev = yield* readSecretBytesStrict(item.name);
+          previousModifiedSecrets.set(item.name, prev);
+        }
+
+        const attemptedSecretNames: string[] = [];
+        yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const mutationExit = yield* Effect.exit(
+              Effect.gen(function* () {
+                for (const item of secretMutations) {
+                  attemptedSecretNames.push(item.name);
+                  yield* writeOptionalSecret(item.name, item.value);
+                }
+                yield* Effect.tryPromise({
+                  try: () =>
+                    runtime.updateConfig(configPatch, {
+                      confirmLegacyProxyMigrated: shouldConfirmLegacyProxyAfterWrite,
+                    }),
+                  catch: (error) => mapWagentError(error),
+                });
+              }),
+            );
+            if (mutationExit._tag === "Failure") {
+              const rollbackEntries: Array<{ readonly name: string; readonly detail: string }> = [];
+              for (const name of [...new Set(attemptedSecretNames)].reverse()) {
+                const res = yield* Effect.exit(
+                  restoreSecretBytesStrict(
+                    name,
+                    previousModifiedSecrets.get(name) ?? Option.none(),
+                  ),
+                );
+                if (res._tag === "Failure") {
+                  const squashed = Cause.squash(res.cause);
+                  const detail =
+                    squashed instanceof Error && squashed.message
+                      ? squashed.message
+                      : String(squashed);
+                  rollbackEntries.push({ name, detail: detail.replace(/\s+/gu, " ").trim() });
+                }
+              }
+              if (rollbackEntries.length > 0) {
+                const prefix = "Wagent config update failed; rollback failed for ";
+                const namesAndPunctLen = rollbackEntries.reduce(
+                  (sum, item) => sum + item.name.length + 5,
+                  0,
+                );
+                const remainingBudget = Math.max(0, 390 - prefix.length - namesAndPunctLen);
+                const perKeyDetail = Math.floor(remainingBudget / rollbackEntries.length);
+                const formatted = rollbackEntries
+                  .map((item) =>
+                    perKeyDetail >= 8 && item.detail.length > 0
+                      ? `${item.name}(${item.detail.slice(0, perKeyDetail)})`
+                      : item.name,
+                  )
+                  .join(", ");
+                return yield* new WagentRuntimeError({
+                  reason: `${prefix}${formatted}`.slice(0, 398),
+                });
+              }
+              return yield* Effect.failCause(mutationExit.cause);
+            }
+          }),
+        );
+      }),
+    );
 
     yield* syncTelegramChannel;
     const nextStatus = yield* buildStatus();

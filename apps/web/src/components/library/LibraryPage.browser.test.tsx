@@ -170,16 +170,45 @@ vi.mock(import("../../state/library"), (() => {
       update: makeCommand("update"),
       delete: makeCommand("delete"),
       composeDraft: makeCommand("composeDraft"),
+      upsertFeed: makeCommand("upsertFeed"),
+      setFeedEnabled: makeCommand("setFeedEnabled"),
+      deleteFeed: makeCommand("deleteFeed"),
+      runFeedNow: makeCommand("runFeedNow"),
+      runWorkHarvest: makeCommand("runWorkHarvest"),
     },
+    useLibraryFeeds: (_environmentId: EnvironmentId | null, enabled: boolean) => ({
+      data: enabled ? { feeds: [], dailyAiUsed: 0 } : null,
+      dataUpdatedAt: 1,
+      error: null,
+      failure: null,
+      isPending: false,
+      isSuccess: enabled,
+      refresh: notify,
+    }),
+    useLibraryReadingModels: (_environmentId: EnvironmentId | null, enabled: boolean) => ({
+      data: enabled ? { models: [] } : null,
+      dataUpdatedAt: 1,
+      error: null,
+      failure: null,
+      isPending: false,
+      isSuccess: enabled,
+      refresh: notify,
+    }),
     useLibraryWkbStatus: (environmentId: EnvironmentId | null, enabled: boolean) => ({
       data:
         enabled && environmentId === ENV_A
           ? {
               available: true,
+              syncAvailable: true,
               mode: "dual" as const,
               remoteUrl: "https://kb.example.invalid/kb/mcp",
             }
-          : { available: false, mode: "unavailable" as const, remoteUrl: null },
+          : {
+              available: false,
+              syncAvailable: false,
+              mode: "unavailable" as const,
+              remoteUrl: null,
+            },
       dataUpdatedAt: 1,
       error: null,
       failure: null,
