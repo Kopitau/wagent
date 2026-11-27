@@ -4,14 +4,19 @@ import {
   LibraryDeleteInput,
   LibraryDeleteResult,
   LibraryEntry,
+  LibraryFetchUrlInput,
+  LibraryFetchUrlResult,
   LibraryGetInput,
   LibraryGetResult,
+  LibraryImportFromWkbInput,
+  LibraryImportFromWkbResult,
   LibraryImportTextFileInput,
   LibraryListInput,
   LibraryListResult,
   LibraryRpcError,
   LibrarySaveInput,
   LibraryUpdateInput,
+  LibraryWkbStatusResult,
 } from "./library.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -746,6 +751,9 @@ export const WS_METHODS = {
   libraryUpdate: "library.update",
   libraryDelete: "library.delete",
   libraryComposeDraft: "library.composeDraft",
+  libraryFetchUrl: "library.fetchUrl",
+  libraryWkbStatus: "library.wkbStatus",
+  libraryImportFromWkb: "library.importFromWkb",
 
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeVcsBranch: "subscribeVcsBranch",
@@ -1748,6 +1756,23 @@ const WsLibraryComposeDraftRpc = Rpc.make(WS_METHODS.libraryComposeDraft, {
   error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
 });
 
+const WsLibraryFetchUrlRpc = Rpc.make(WS_METHODS.libraryFetchUrl, {
+  payload: LibraryFetchUrlInput,
+  success: LibraryFetchUrlResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryWkbStatusRpc = Rpc.make(WS_METHODS.libraryWkbStatus, {
+  success: LibraryWkbStatusResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryImportFromWkbRpc = Rpc.make(WS_METHODS.libraryImportFromWkb, {
+  payload: LibraryImportFromWkbInput,
+  success: LibraryImportFromWkbResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
 const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -2692,6 +2717,9 @@ export const WsRpcGroup = RpcGroup.make(
   WsLibraryUpdateRpc,
   WsLibraryDeleteRpc,
   WsLibraryComposeDraftRpc,
+  WsLibraryFetchUrlRpc,
+  WsLibraryWkbStatusRpc,
+  WsLibraryImportFromWkbRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsWorkspaceListFoldersRpc,

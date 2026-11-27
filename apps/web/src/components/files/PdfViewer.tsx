@@ -242,7 +242,9 @@ function PdfPage(props: {
 }
 
 export default function PdfViewer(props: {
-  src: string;
+  src?: string;
+  loadBytes?: (signal: AbortSignal, options: { readonly reload: boolean }) => Promise<ArrayBuffer>;
+  sourceKey?: string;
   title: string;
   positionKey?: string;
   initialView?: PdfViewState;
@@ -274,6 +276,23 @@ export default function PdfViewer(props: {
   const find = useRef<HTMLInputElement>(null);
   const zoomAnchor = useRef<{ page: number; offset: number; width: number } | null>(null);
   const initialPage = initialView.page;
+  const loadKey = props.sourceKey ?? props.src ?? "";
+  const fetchPdfBytes = useEffectEvent(
+    (_sourceKey: string, signal: AbortSignal, reload: boolean) => {
+      if (props.loadBytes !== undefined) {
+        return props.loadBytes(signal, { reload });
+      }
+      if (props.src === undefined) {
+        return Promise.reject(new Error(m(msg("Unable to open PDF."))));
+      }
+      return readBoundedDocument(
+        props.src,
+        signal,
+        50 * 1024 * 1024,
+        reload ? "reload" : "default",
+      );
+    },
+  );
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the PDF fetch, load timeout, and pdf.js document task across source changes, retries, and unmounts.
   useEffect(() => {
     const controller = new AbortController();
@@ -284,12 +303,7 @@ export default function PdfViewer(props: {
       controller.abort();
       void task?.destroy();
     }, 30_000);
-    void readBoundedDocument(
-      props.src,
-      controller.signal,
-      50 * 1024 * 1024,
-      revision > 0 ? "reload" : "default",
-    )
+    void fetchPdfBytes(loadKey, controller.signal, revision > 0)
       .then(async (bytes) => {
         controller.signal.throwIfAborted();
         task = openPdf(bytes);
@@ -328,7 +342,7 @@ export default function PdfViewer(props: {
       clearTimeout(timeout);
       void task?.destroy();
     };
-  }, [props.src, revision, initialPage, savedPosition]);
+  }, [loadKey, revision, initialPage, savedPosition]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Measure the PDF viewport before paint and observe resizes for fit-width sizing and visible-page selection.
   useLayoutEffect(() => {
     const node = scroll.current;

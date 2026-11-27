@@ -5,6 +5,8 @@ const CLI_RUNTIME_EXTERNAL_PREFIXES = [
   "@cursor/sdk",
   // Playwright reads package.json and browsers.json beside its runtime modules.
   "playwright-core",
+  // PDF.js reads cmaps/, standard_fonts/, and legacy/build/pdf.worker.mjs beside its runtime modules.
+  "pdfjs-dist",
   "node-pty",
   "ffi-rs",
   "@yuuang/",

@@ -47,3 +47,11 @@ export function useLibraryEntry(
       : null,
   );
 }
+
+export function useLibraryWkbStatus(environmentId: EnvironmentId | null, enabled: boolean) {
+  return useEnvironmentQuery(
+    enabled && environmentId !== null
+      ? libraryEnvironment.wkbStatus({ environmentId, input: undefined })
+      : null,
+  );
+}

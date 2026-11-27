@@ -8,6 +8,8 @@ import {
   type LibraryEntry,
   type LibraryEntryKind,
   type LibraryEntrySummary,
+  type LibraryFetchUrlInput,
+  type LibraryImportFromWkbInput,
   type LibraryListInput,
   type LibrarySaveInput,
   type LibraryUpdateInput,
@@ -17,9 +19,11 @@ import { LIBRARY_MAX_DRAFT_ITEMS } from "@t3tools/research-library";
 import { msg, Plural, T, useGT, useMessages, Var } from "gt-react";
 import {
   AlertTriangleIcon,
+  BookIcon,
   BookOpenIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  DownloadIcon,
   ExternalLinkIcon,
   FileTextIcon,
   FileUpIcon,
@@ -30,6 +34,8 @@ import {
   SearchIcon,
   StickyNoteIcon,
   Trash2Icon,
+  UploadIcon,
+  VideoIcon,
 } from "lucide-react";
 import { useRef, useState } from "react";
 
@@ -87,14 +93,21 @@ import { useNewThreadHandler } from "~/hooks/useHandleNewThread";
 import { m } from "~/i18n/messages";
 import { useProjects } from "~/state/entities";
 import { useEnvironments } from "~/state/environments";
-import { libraryEnvironment, useLibraryEntry, useLibraryList } from "~/state/library";
+import {
+  libraryEnvironment,
+  useLibraryEntry,
+  useLibraryList,
+  useLibraryWkbStatus,
+} from "~/state/library";
 import { useAtomCommand } from "~/state/use-atom-command";
 
+import { LibraryPdfPreview } from "./LibraryPdfPreview";
 import {
   formatLibraryUrlHost,
   formatTagsInput,
   isLinkEntryKind,
   parseTagsInput,
+  readPdfUploadFile,
   readUtf8TextImportFile,
   resolveActiveLibraryEnvironmentId,
   toggleDraftSelection,
@@ -109,6 +122,8 @@ const KIND_LABELS = {
   wechat: msg("WeChat article", { $context: "research library entry kind" }),
   file: msg("Text file", { $context: "research library entry kind" }),
   pdf: msg("PDF", { $context: "research library entry kind" }),
+  video: msg("Video", { $context: "research library entry kind" }),
+  epub: msg("EPUB", { $context: "research library entry kind" }),
 } as const;
 
 const CREATE_KINDS = ["note", "web", "wechat"] as const satisfies ReadonlyArray<LibraryEntryKind>;
@@ -118,6 +133,8 @@ const FILTER_KINDS = [
   "wechat",
   "file",
   "pdf",
+  "video",
+  "epub",
 ] as const satisfies ReadonlyArray<LibraryEntryKind>;
 
 interface ConflictState {
@@ -140,6 +157,10 @@ function EntryKindIcon({ kind }: { readonly kind: LibraryEntryKind }) {
     case "file":
     case "pdf":
       return <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />;
+    case "video":
+      return <VideoIcon className="size-3.5 shrink-0 text-muted-foreground" />;
+    case "epub":
+      return <BookIcon className="size-3.5 shrink-0 text-muted-foreground" />;
     case "note":
       return <StickyNoteIcon className="size-3.5 shrink-0 text-muted-foreground" />;
   }
@@ -149,16 +170,19 @@ function LibraryCreateDialog({
   open,
   onOpenChange,
   onSubmit,
+  onFetchUrl,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onSubmit: (input: LibrarySaveInput) => Promise<string | null>;
+  readonly onFetchUrl: (input: LibraryFetchUrlInput) => Promise<string | null>;
 }) {
   const gt = useGT();
   const resolveMessage = useMessages();
   const [kind, setKind] = useState<LibraryEntryKind>("note");
   const [title, setTitle] = useState("");
   const [url, setUrl] = useState("");
+  const [autoFetchUrl, setAutoFetchUrl] = useState(true);
   const [tagsText, setTagsText] = useState("");
   const [body, setBody] = useState("");
   const [note, setNote] = useState("");
@@ -169,6 +193,7 @@ function LibraryCreateDialog({
     setKind("note");
     setTitle("");
     setUrl("");
+    setAutoFetchUrl(true);
     setTagsText("");
     setBody("");
     setNote("");
@@ -180,20 +205,31 @@ function LibraryCreateDialog({
     onOpenChange(nextOpen);
   };
 
+  const willAutoFetch = isLinkEntryKind(kind) && autoFetchUrl && body.trim().length === 0;
+
   const handleSave = async () => {
     if (submitting) return;
     setError(null);
     setSubmitting(true);
     const trimmedUrl = url.trim();
+    const trimmedTitle = title.trim();
     const tags = parseTagsInput(tagsText);
-    const failure = await onSubmit({
-      kind,
-      title: title.trim(),
-      ...(trimmedUrl.length > 0 ? { url: trimmedUrl } : {}),
-      body,
-      note,
-      ...(tags.length > 0 ? { tags: [...tags] } : {}),
-    });
+    const failure = willAutoFetch
+      ? await onFetchUrl({
+          url: trimmedUrl,
+          ...(trimmedTitle.length > 0 ? { title: trimmedTitle } : {}),
+          ...(note.length > 0 ? { note } : {}),
+          ...(tags.length > 0 ? { tags: [...tags] } : {}),
+          allowFallback: true,
+        })
+      : await onSubmit({
+          kind,
+          title: trimmedTitle,
+          ...(trimmedUrl.length > 0 ? { url: trimmedUrl } : {}),
+          body,
+          note,
+          ...(tags.length > 0 ? { tags: [...tags] } : {}),
+        });
     setSubmitting(false);
     if (failure !== null) {
       setError(failure);
@@ -211,7 +247,10 @@ function LibraryCreateDialog({
             <T>Save to library</T>
           </DialogTitle>
           <DialogDescription>
-            <T>Create a standalone note or save a link with manual excerpts and notes.</T>
+            <T>
+              Create a standalone note or save a web/WeChat link (with automatic article fetch or
+              manual excerpts).
+            </T>
           </DialogDescription>
         </DialogHeader>
         <DialogPanel>
@@ -241,7 +280,7 @@ function LibraryCreateDialog({
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="library-create-title">
-                <T>Title</T>
+                {willAutoFetch ? <T>Title (optional when auto-fetching)</T> : <T>Title</T>}
               </Label>
               <Input
                 id="library-create-title"
@@ -252,18 +291,29 @@ function LibraryCreateDialog({
             </div>
 
             {isLinkEntryKind(kind) ? (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="library-create-url">
-                  <T>Source URL</T>
-                </Label>
-                <Input
-                  id="library-create-url"
-                  type="url"
-                  placeholder={gt("https://example.com/article")}
-                  value={url}
-                  onChange={(event) => setUrl(event.target.value)}
-                />
-              </div>
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="library-create-url">
+                    <T>Source URL</T>
+                  </Label>
+                  <Input
+                    id="library-create-url"
+                    type="url"
+                    placeholder={gt("https://example.com/article")}
+                    value={url}
+                    onChange={(event) => setUrl(event.target.value)}
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={autoFetchUrl}
+                    onCheckedChange={(checked) => setAutoFetchUrl(checked === true)}
+                  />
+                  <span>
+                    <T>Fetch article text automatically (falls back to link-only if blocked)</T>
+                  </span>
+                </label>
+              </>
             ) : null}
 
             <div className="flex flex-col gap-1.5">
@@ -319,13 +369,152 @@ function LibraryCreateDialog({
           <Button
             disabled={
               submitting ||
-              title.trim().length === 0 ||
+              (!willAutoFetch && title.trim().length === 0) ||
               (isLinkEntryKind(kind) && url.trim().length === 0)
             }
             onClick={() => void handleSave()}
           >
             {submitting ? <Spinner className="size-3.5" /> : null}
-            <T>Save entry</T>
+            {willAutoFetch ? <T>Fetch and save</T> : <T>Save entry</T>}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+function LibraryWkbImportDialog({
+  open,
+  onOpenChange,
+  onImport,
+}: {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onImport: (input: LibraryImportFromWkbInput) => Promise<string | null>;
+}) {
+  const gt = useGT();
+  const [source, setSource] = useState("");
+  const [generatePdf, setGeneratePdf] = useState(false);
+  const [tagsText, setTagsText] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  const resetForm = () => {
+    setSource("");
+    setGeneratePdf(false);
+    setTagsText("");
+    setNote("");
+    setError(null);
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) resetForm();
+    onOpenChange(nextOpen);
+  };
+
+  const handleSubmit = async () => {
+    if (submitting || source.trim().length === 0) return;
+    setError(null);
+    setSubmitting(true);
+    const tags = parseTagsInput(tagsText);
+    const failure = await onImport({
+      source: source.trim(),
+      generatePdf,
+      ...(note.length > 0 ? { note } : {}),
+      ...(tags.length > 0 ? { tags: [...tags] } : {}),
+    });
+    setSubmitting(false);
+    if (failure !== null) {
+      setError(failure);
+      return;
+    }
+    resetForm();
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogPopup className="max-w-xl">
+        <DialogHeader>
+          <DialogTitle>
+            <T>Import multimodal source via wkb</T>
+          </DialogTitle>
+          <DialogDescription>
+            <T>
+              Extract Bilibili, YouTube, WeChat, EPUB, or web articles via local wkb into this
+              environment’s library.
+            </T>
+          </DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-wkb-source">
+                <T>Source URL</T>
+              </Label>
+              <Input
+                id="library-wkb-source"
+                type="url"
+                placeholder={gt("https://www.bilibili.com/video/... or https://youtu.be/...")}
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+              />
+            </div>
+
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={generatePdf}
+                onCheckedChange={(checked) => setGeneratePdf(checked === true)}
+              />
+              <span>
+                <T>Also render a PDF copy for in-app PDF reading</T>
+              </span>
+            </label>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-wkb-tags">
+                <T>Tags</T>
+              </Label>
+              <Input
+                id="library-wkb-tags"
+                placeholder={gt("Comma-separated tags, e.g. video, talk")}
+                value={tagsText}
+                onChange={(event) => setTagsText(event.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-wkb-note">
+                <T>Personal note</T>
+              </Label>
+              <Textarea
+                id="library-wkb-note"
+                rows={3}
+                placeholder={gt("Optional context or questions for this source")}
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </div>
+
+            {error ? (
+              <Alert variant="error">
+                <AlertTriangleIcon />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+          </div>
+        </DialogPanel>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>
+            <T>Cancel</T>
+          </DialogClose>
+          <Button
+            disabled={submitting || source.trim().length === 0}
+            onClick={() => void handleSubmit()}
+          >
+            {submitting ? <Spinner className="size-3.5" /> : <DownloadIcon />}
+            <T>Extract and import</T>
           </Button>
         </DialogFooter>
       </DialogPopup>
@@ -334,12 +523,14 @@ function LibraryCreateDialog({
 }
 
 function LibraryEntryEditor({
+  environmentId,
   entry,
   canWrite,
   onSave,
   onDelete,
   onReload,
 }: {
+  readonly environmentId: EnvironmentId;
   readonly entry: LibraryEntry;
   readonly canWrite: boolean;
   readonly onSave: (
@@ -358,6 +549,10 @@ function LibraryEntryEditor({
 }) {
   const gt = useGT();
   const resolveMessage = useMessages();
+  const hasPdfBlob = entry.blobSha256 !== null;
+  const [viewMode, setViewMode] = useState<"pdf" | "text">(
+    hasPdfBlob && !entry.blobMissing ? "pdf" : "text",
+  );
   const [title, setTitle] = useState(entry.title);
   const [url, setUrl] = useState(entry.url ?? "");
   const [tagsText, setTagsText] = useState(formatTagsInput(entry.tags));
@@ -461,140 +656,180 @@ function LibraryEntryEditor({
             </a>
           ) : null}
         </div>
-        {canWrite ? (
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="destructive-outline"
-              disabled={deleting}
-              onClick={() => setConfirmDeleteOpen(true)}
-            >
-              <Trash2Icon />
-              <T>Delete</T>
-            </Button>
-            <Button
-              size="sm"
-              disabled={saving || !isDirty || title.trim().length === 0}
-              onClick={() => void handleSave()}
-            >
-              {saving ? <Spinner className="size-3.5" /> : null}
-              <T>Save changes</T>
-            </Button>
-          </div>
-        ) : (
-          <Badge variant="outline">
-            <LockIcon className="size-3" />
-            <T>Read-only</T>
-          </Badge>
-        )}
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-4 p-5">
-          {conflict ? (
-            <Alert variant="warning">
-              <AlertTriangleIcon />
-              <AlertTitle>
-                <T>Edit conflict detected</T>
-              </AlertTitle>
-              <AlertDescription>
-                <T>
-                  This entry changed in another session (your revision{" "}
-                  <Var>{conflict.expectedRevision}</Var>, latest revision{" "}
-                  <Var>{conflict.currentRevision}</Var>). Reload to inspect the latest version
-                  before saving again.
-                </T>
-              </AlertDescription>
-              <AlertAction>
-                <Button
-                  size="sm"
-                  variant="warning-outline"
-                  onClick={() => {
-                    setConflict(null);
-                    onReload();
-                  }}
-                >
-                  <T>Reload latest</T>
-                </Button>
-              </AlertAction>
-            </Alert>
-          ) : null}
-
-          {error ? (
-            <Alert variant="error">
-              <AlertTriangleIcon />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          ) : null}
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="library-detail-title">
-              <T>Title</T>
-            </Label>
-            <Input
-              id="library-detail-title"
-              disabled={!canWrite}
-              value={title}
-              onChange={(event) => setTitle(event.target.value)}
-            />
-          </div>
-
-          {isLinkEntryKind(entry.kind) || entry.url ? (
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="library-detail-url">
-                <T>Source URL</T>
-              </Label>
-              <Input
-                id="library-detail-url"
-                disabled={!canWrite}
-                type="url"
-                value={url}
-                onChange={(event) => setUrl(event.target.value)}
-              />
+        <div className="flex items-center gap-2">
+          {hasPdfBlob ? (
+            <div className="flex items-center gap-1">
+              <Button
+                size="sm"
+                variant={viewMode === "pdf" ? "secondary" : "ghost"}
+                onClick={() => setViewMode("pdf")}
+              >
+                <BookOpenIcon />
+                <T>PDF</T>
+              </Button>
+              <Button
+                size="sm"
+                variant={viewMode === "text" ? "secondary" : "ghost"}
+                onClick={() => setViewMode("text")}
+              >
+                <FileTextIcon />
+                <T>Text & notes</T>
+              </Button>
             </div>
           ) : null}
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="library-detail-tags">
-              <T>Tags</T>
-            </Label>
-            <Input
-              id="library-detail-tags"
-              disabled={!canWrite}
-              placeholder={gt("Comma-separated tags")}
-              value={tagsText}
-              onChange={(event) => setTagsText(event.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="library-detail-note">
-              <T>Personal note</T>
-            </Label>
-            <Textarea
-              id="library-detail-note"
-              disabled={!canWrite}
-              rows={4}
-              placeholder={gt("Add your own summary, takeaways, or follow-up questions")}
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-            />
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="library-detail-body">
-              <T>Captured text</T>
-            </Label>
-            <Textarea
-              id="library-detail-body"
-              disabled={!canWrite}
-              rows={10}
-              value={body}
-              onChange={(event) => setBody(event.target.value)}
-            />
-          </div>
+          {canWrite ? (
+            <>
+              <Button
+                size="sm"
+                variant="destructive-outline"
+                disabled={deleting}
+                onClick={() => setConfirmDeleteOpen(true)}
+              >
+                <Trash2Icon />
+                <T>Delete</T>
+              </Button>
+              <Button
+                size="sm"
+                disabled={saving || !isDirty || title.trim().length === 0}
+                onClick={() => void handleSave()}
+              >
+                {saving ? <Spinner className="size-3.5" /> : null}
+                <T>Save changes</T>
+              </Button>
+            </>
+          ) : (
+            <Badge variant="outline">
+              <LockIcon className="size-3" />
+              <T>Read-only</T>
+            </Badge>
+          )}
         </div>
-      </ScrollArea>
+      </div>
+
+      {hasPdfBlob && viewMode === "pdf" ? (
+        <LibraryPdfPreview environmentId={environmentId} entry={entry} showOpenInNewTab />
+      ) : (
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="flex flex-col gap-4 p-5">
+            {entry.blobMissing ? (
+              <Alert variant="warning">
+                <AlertTriangleIcon />
+                <AlertTitle>
+                  <T>Original PDF file missing</T>
+                </AlertTitle>
+                <AlertDescription>
+                  <T>
+                    The stored PDF file could not be found on disk. Extracted text and personal
+                    notes remain editable below.
+                  </T>
+                </AlertDescription>
+              </Alert>
+            ) : null}
+            {conflict ? (
+              <Alert variant="warning">
+                <AlertTriangleIcon />
+                <AlertTitle>
+                  <T>Edit conflict detected</T>
+                </AlertTitle>
+                <AlertDescription>
+                  <T>
+                    This entry changed in another session (your revision{" "}
+                    <Var>{conflict.expectedRevision}</Var>, latest revision{" "}
+                    <Var>{conflict.currentRevision}</Var>). Reload to inspect the latest version
+                    before saving again.
+                  </T>
+                </AlertDescription>
+                <AlertAction>
+                  <Button
+                    size="sm"
+                    variant="warning-outline"
+                    onClick={() => {
+                      setConflict(null);
+                      onReload();
+                    }}
+                  >
+                    <T>Reload latest</T>
+                  </Button>
+                </AlertAction>
+              </Alert>
+            ) : null}
+
+            {error ? (
+              <Alert variant="error">
+                <AlertTriangleIcon />
+                <AlertDescription>{error}</AlertDescription>
+              </Alert>
+            ) : null}
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-detail-title">
+                <T>Title</T>
+              </Label>
+              <Input
+                id="library-detail-title"
+                disabled={!canWrite}
+                value={title}
+                onChange={(event) => setTitle(event.target.value)}
+              />
+            </div>
+
+            {isLinkEntryKind(entry.kind) || entry.url ? (
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="library-detail-url">
+                  <T>Source URL</T>
+                </Label>
+                <Input
+                  id="library-detail-url"
+                  disabled={!canWrite}
+                  type="url"
+                  value={url}
+                  onChange={(event) => setUrl(event.target.value)}
+                />
+              </div>
+            ) : null}
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-detail-tags">
+                <T>Tags</T>
+              </Label>
+              <Input
+                id="library-detail-tags"
+                disabled={!canWrite}
+                placeholder={gt("Comma-separated tags")}
+                value={tagsText}
+                onChange={(event) => setTagsText(event.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-detail-note">
+                <T>Personal note</T>
+              </Label>
+              <Textarea
+                id="library-detail-note"
+                disabled={!canWrite}
+                rows={4}
+                placeholder={gt("Add your own summary, takeaways, or follow-up questions")}
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="library-detail-body">
+                <T>Captured text</T>
+              </Label>
+              <Textarea
+                id="library-detail-body"
+                disabled={!canWrite}
+                rows={10}
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+              />
+            </div>
+          </div>
+        </ScrollArea>
+      )}
 
       <AlertDialog open={confirmDeleteOpen} onOpenChange={setConfirmDeleteOpen}>
         <AlertDialogPopup>
@@ -641,6 +876,7 @@ export function LibraryPage({
   const projects = useProjects();
   const handleNewThread = useNewThreadHandler();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfInputRef = useRef<HTMLInputElement | null>(null);
 
   const [selectedEnvId, setSelectedEnvId] = useState<EnvironmentId | null>(null);
   const [queryInput, setQueryInput] = useState("");
@@ -652,9 +888,11 @@ export function LibraryPage({
   const [activeEntryId, setActiveEntryId] = useState<string | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<ReadonlyArray<string>>([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [wkbOpen, setWkbOpen] = useState(false);
   const [draftQuestion, setDraftQuestion] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
   const [importingFile, setImportingFile] = useState(false);
+  const [uploadingPdf, setUploadingPdf] = useState(false);
   const [composingDraft, setComposingDraft] = useState(false);
 
   const activeEnvironmentId = resolveActiveLibraryEnvironmentId(
@@ -689,9 +927,17 @@ export function LibraryPage({
 
   const listQuery = useLibraryList(activeEnvironmentId, listInput, queryEnabled);
   const detailQuery = useLibraryEntry(activeEnvironmentId, activeEntryId, queryEnabled);
+  const wkbStatusQuery = useLibraryWkbStatus(activeEnvironmentId, queryEnabled);
 
   const saveCommand = useAtomCommand(libraryEnvironment.save, { reportFailure: false });
+  const fetchUrlCommand = useAtomCommand(libraryEnvironment.fetchUrl, { reportFailure: false });
   const importTextFileCommand = useAtomCommand(libraryEnvironment.importTextFile, {
+    reportFailure: false,
+  });
+  const importFromWkbCommand = useAtomCommand(libraryEnvironment.importFromWkb, {
+    reportFailure: false,
+  });
+  const uploadPdfCommand = useAtomCommand(libraryEnvironment.uploadPdf, {
     reportFailure: false,
   });
   const updateCommand = useAtomCommand(libraryEnvironment.update, { reportFailure: false });
@@ -726,6 +972,86 @@ export function LibraryPage({
     setActiveEntryId(result.value.id);
     setOffset(0);
     return null;
+  };
+
+  const handleFetchUrl = async (input: LibraryFetchUrlInput): Promise<string | null> => {
+    if (activeEnvironmentId === null) return gt("No environment selected.");
+    const result = await fetchUrlCommand({ environmentId: activeEnvironmentId, input });
+    if (result._tag === "Failure") {
+      return commandFailureText(
+        squashAtomCommandFailure(result),
+        gt("Could not fetch or save this URL."),
+      );
+    }
+    if (!result.value.fetched) {
+      toastManager.add({
+        type: "info",
+        title: m(msg("Saved link without article body")),
+        description:
+          result.value.fallbackReason ??
+          m(msg("Remote site blocked automatic extraction. You can paste key excerpts manually.")),
+      });
+    }
+    setActiveEntryId(result.value.entry.id);
+    setOffset(0);
+    return null;
+  };
+
+  const handleImportFromWkb = async (input: LibraryImportFromWkbInput): Promise<string | null> => {
+    if (activeEnvironmentId === null) return gt("No environment selected.");
+    const result = await importFromWkbCommand({ environmentId: activeEnvironmentId, input });
+    if (result._tag === "Failure") {
+      return commandFailureText(
+        squashAtomCommandFailure(result),
+        gt("Could not import source via wkb."),
+      );
+    }
+    if (result.value.warnings.length > 0) {
+      toastManager.add({
+        type: "info",
+        title: m(msg("Imported via wkb with notices")),
+        description: result.value.warnings.join(" · "),
+      });
+    }
+    setActiveEntryId(result.value.entry.id);
+    setOffset(0);
+    return null;
+  };
+
+  const handlePdfFileChange = async (file: File | undefined) => {
+    if (!file || activeEnvironmentId === null || uploadingPdf) return;
+    setUploadingPdf(true);
+    const decoded = await readPdfUploadFile(file);
+    if (!decoded.ok) {
+      setUploadingPdf(false);
+      toastManager.add({
+        type: "error",
+        title: m(msg("Could not upload PDF")),
+        description: decoded.message,
+      });
+      return;
+    }
+    const result = await uploadPdfCommand({
+      environmentId: activeEnvironmentId,
+      input: {
+        fileName: decoded.fileName,
+        bytes: decoded.bytes,
+      },
+    });
+    setUploadingPdf(false);
+    if (result._tag === "Failure") {
+      toastManager.add({
+        type: "error",
+        title: m(msg("Could not upload PDF")),
+        description: commandFailureText(
+          squashAtomCommandFailure(result),
+          m(msg("The server rejected this PDF file.")),
+        ),
+      });
+      return;
+    }
+    setActiveEntryId(result.value.id);
+    setOffset(0);
   };
 
   const handleFileChange = async (file: File | undefined) => {
@@ -915,6 +1241,27 @@ export function LibraryPage({
                   void handleFileChange(file);
                 }}
               />
+              <input
+                ref={pdfInputRef}
+                accept=".pdf,application/pdf"
+                className="sr-only"
+                data-testid="library-import-pdf-input"
+                type="file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  void handlePdfFileChange(file);
+                }}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={uploadingPdf}
+                onClick={() => pdfInputRef.current?.click()}
+              >
+                {uploadingPdf ? <Spinner className="size-3.5" /> : <UploadIcon />}
+                <T>Upload PDF</T>
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -924,6 +1271,12 @@ export function LibraryPage({
                 {importingFile ? <Spinner className="size-3.5" /> : <FileUpIcon />}
                 <T>Import file</T>
               </Button>
+              {wkbStatusQuery.data?.available === true ? (
+                <Button size="sm" variant="outline" onClick={() => setWkbOpen(true)}>
+                  <DownloadIcon />
+                  <T>Import via wkb</T>
+                </Button>
+              ) : null}
               <Button size="sm" onClick={() => setCreateOpen(true)}>
                 <PlusIcon />
                 <T>New entry</T>
@@ -1297,11 +1650,12 @@ export function LibraryPage({
                     <AlertDescription>{detailQuery.error}</AlertDescription>
                   </Alert>
                 </div>
-              ) : showingEntry !== null ? (
+              ) : showingEntry !== null && activeEnvironmentId !== null ? (
                 <LibraryEntryEditor
                   key={`${showingEntry.id}:${showingEntry.revision}`}
                   canWrite={canWrite}
                   entry={showingEntry}
+                  environmentId={activeEnvironmentId}
                   onDelete={handleDeleteEntry}
                   onReload={() => {
                     detailQuery.refresh();
@@ -1317,8 +1671,15 @@ export function LibraryPage({
 
       <LibraryCreateDialog
         open={createOpen}
+        onFetchUrl={handleFetchUrl}
         onOpenChange={setCreateOpen}
         onSubmit={handleSaveNew}
+      />
+
+      <LibraryWkbImportDialog
+        open={wkbOpen}
+        onImport={handleImportFromWkb}
+        onOpenChange={setWkbOpen}
       />
     </SidebarInset>
   );

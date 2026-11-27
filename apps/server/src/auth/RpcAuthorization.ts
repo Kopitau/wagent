@@ -187,6 +187,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.projectsCreateNew]: AuthOrchestrationOperateScope,
   [WS_METHODS.libraryList]: AuthOrchestrationReadScope,
   [WS_METHODS.libraryGet]: AuthOrchestrationReadScope,
+  [WS_METHODS.libraryWkbStatus]: AuthOrchestrationReadScope,
   [WS_METHODS.shellOpenInEditor]: AuthOrchestrationOperateScope,
   [WS_METHODS.filesystemBrowse]: AuthFilesystemReadScope,
   [WS_METHODS.workspaceListFolders]: AuthFilesystemReadScope,

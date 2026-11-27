@@ -59,6 +59,7 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import {
   browserApiCorsAllowedHeaders,
   browserApiCorsAllowedMethods,
+  browserApiCorsExposedHeaders,
   DESKTOP_RENDERER_ORIGINS,
   MCP_HTTP_PATH,
 } from "./httpCors.ts";
@@ -321,6 +322,7 @@ export const layerBrowserApiCors = Layer.unwrap(
     const wildcardCors = HttpMiddleware.cors({
       allowedMethods: browserApiCorsAllowedMethods,
       allowedHeaders: browserApiCorsAllowedHeaders,
+      exposedHeaders: browserApiCorsExposedHeaders,
       maxAge: 600,
     });
     const devCors = devOrigin
@@ -329,6 +331,7 @@ export const layerBrowserApiCors = Layer.unwrap(
           credentials: true,
           allowedMethods: browserApiCorsAllowedMethods,
           allowedHeaders: browserApiCorsAllowedHeaders,
+          exposedHeaders: browserApiCorsExposedHeaders,
           maxAge: 600,
         })
       : undefined;

@@ -78,8 +78,13 @@
         "@t3tools/web",
         "@napi-rs/keyring",
         "ffi-rs",
+        "pdfjs-dist",
         "transcribe-cpp",
       ],
+    },
+    "packages/research-library": {
+      // pdfExtract.ts resolves pdfjs-dist/package.json via createRequire so Node SEA bundles stay free of bare external ESM imports.
+      "ignoreDependencies": ["pdfjs-dist"],
     },
     "apps/desktop": {
       // Electron loads these bundles by filename rather than importing them.

@@ -8,6 +8,8 @@ const DESKTOP_RUNTIME_EXTERNAL_PREFIXES = [
   "@yuuang/",
   // Playwright reads its runtime bundle/driver from disk; inlining cannot replace those files.
   "playwright-core",
+  // PDF.js reads cmaps/, standard_fonts/, and legacy/build/pdf.worker.mjs beside its runtime modules.
+  "pdfjs-dist",
 ] as const;
 
 export function isDesktopRuntimeExternalDependency(id: string): boolean {

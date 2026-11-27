@@ -284,3 +284,136 @@ const executeEnvironmentRequest = Effect.fnUntraced(function* <
     }),
   );
 });
+
+/**
+ * Executes an authenticated raw HTTP fetch against the currently connected environment
+ * (for binary streaming routes outside `EnvironmentHttpApi`, such as research library PDF upload/download).
+ * Reuses the exact same Cookie, Bearer, and DPoP signing + renewal flow as `executeConnectedEnvironmentHttpRequest`.
+ */
+export const executeConnectedEnvironmentRawHttpFetch = Effect.fn(
+  "clientRuntime.state.executeConnectedEnvironmentRawHttpFetch",
+)(function* (input: {
+  readonly method: "GET" | "HEAD" | "POST";
+  readonly pathAndQuery: string;
+  readonly headers?: Readonly<Record<string, string>> | undefined;
+  readonly body?: BodyInit | null | undefined;
+  readonly signal?: AbortSignal | undefined;
+  readonly cache?: RequestCache | undefined;
+}): Effect.fn.Return<
+  { readonly response: Response; readonly url: string },
+  RemoteEnvironmentAuthFetchError,
+  EnvironmentSupervisor.EnvironmentSupervisor
+> {
+  const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
+  const preparedOption = yield* SubscriptionRef.get(supervisor.prepared);
+  if (Option.isNone(preparedOption)) {
+    return yield* new RemoteEnvironmentAuthFetchError({
+      ...translatableMessage(msg("The environment is not connected.")),
+      cause: supervisor.target._tag,
+    });
+  }
+  const prepared = preparedOption.value;
+  const signer = yield* Effect.serviceOption(ManagedRelay.ManagedRelayDpopSigner);
+  const remoteAuthorization = yield* Effect.serviceOption(
+    RemoteEnvironmentAuthorization.RemoteEnvironmentAuthorization,
+  );
+  const fetchImpl = Option.getOrElse(
+    yield* Effect.serviceOption(FetchHttpClient.Fetch),
+    () => globalThis.fetch,
+  );
+
+  let httpBaseUrl = prepared.httpBaseUrl;
+  const buildTargetUrl = (baseUrl: string): string => {
+    const base = new URL(baseUrl);
+    base.pathname = "/";
+    base.search = "";
+    base.hash = "";
+    return new URL(input.pathAndQuery, base).toString();
+  };
+
+  let rejectedAccessToken: string | undefined;
+  for (;;) {
+    let authorization = prepared.httpAuthorization;
+    if (authorization?._tag === "Dpop") {
+      if (Option.isNone(remoteAuthorization)) {
+        return yield* new RemoteEnvironmentAuthFetchError({
+          ...translatableMessage(
+            msg("No relay authorization service is available for the environment request."),
+          ),
+          cause: prepared.target._tag,
+        });
+      }
+      const authFetchError = (cause: unknown) =>
+        new RemoteEnvironmentAuthFetchError({
+          ...translatableMessage(msg("Could not authorize the environment request.")),
+          cause,
+        });
+      const direct = authorization.directConnection;
+      if (direct !== undefined) {
+        authorization = yield* remoteAuthorization.value
+          .authorizeDirectDpopHttp(direct, rejectedAccessToken)
+          .pipe(Effect.mapError(authFetchError));
+      } else {
+        const current = yield* remoteAuthorization.value
+          .authorizeDpopHttp({
+            expectedEnvironmentId: prepared.environmentId,
+            ...(rejectedAccessToken === undefined ? {} : { rejectedAccessToken }),
+          })
+          .pipe(Effect.mapError(authFetchError));
+        if (prepared.target._tag === "RelayConnectionTarget") {
+          httpBaseUrl = current.httpBaseUrl;
+        }
+        authorization = current.httpAuthorization;
+      }
+    }
+
+    const requestUrl = buildTargetUrl(httpBaseUrl);
+    const authHeaders = yield* buildEnvironmentAuthHeaders(
+      authorization,
+      input.method,
+      requestUrl,
+      signer,
+    );
+    const requestHeaders: Record<string, string> = {
+      ...withOrchestrationProtocolHeader(authHeaders),
+      ...input.headers,
+    };
+
+    const response = yield* Effect.tryPromise({
+      try: (fiberSignal) => {
+        const combinedSignal =
+          input.signal === undefined ? fiberSignal : AbortSignal.any([input.signal, fiberSignal]);
+        return fetchImpl(requestUrl, {
+          method: input.method,
+          headers: requestHeaders,
+          ...(input.body === undefined ? {} : { body: input.body }),
+          redirect: "error",
+          ...(input.cache === undefined ? {} : { cache: input.cache }),
+          ...(authorization === null ? { credentials: "include" as const } : {}),
+          signal: combinedSignal,
+        });
+      },
+      catch: (cause) =>
+        new RemoteEnvironmentAuthFetchError({
+          ...translatableMessage(
+            msg("Failed to fetch remote environment endpoint {url} ({cause}).", {
+              url: requestUrl,
+              cause: String(cause),
+            }),
+          ),
+          cause,
+        }),
+    });
+
+    if (
+      response.status === 401 &&
+      authorization?._tag === "Dpop" &&
+      rejectedAccessToken === undefined
+    ) {
+      rejectedAccessToken = authorization.accessToken;
+      continue;
+    }
+
+    return { response, url: requestUrl };
+  }
+});

@@ -16,8 +16,11 @@ import {
   LIBRARY_DEFAULT_LIST_LIMIT,
   LIBRARY_MAX_DRAFT_ITEMS,
   LIBRARY_MAX_LIST_LIMIT,
+  LIBRARY_MCP_DEFAULT_READ_CHARS,
+  LIBRARY_MCP_MAX_READ_CHARS,
   LIBRARY_PAGE_EXTRACTION_STATUSES,
   LIBRARY_SNIPPET_MAX_CHARS,
+  LIBRARY_UNTRUSTED_DATA_NOTICE,
   type ComposeLibraryDraftResult,
   type DeleteLibraryEntryInput,
   type DeleteLibraryEntryResult,
@@ -26,6 +29,8 @@ import {
   type LibraryEntryKind,
   type LibraryEntryPage,
   type LibraryEntrySummary,
+  type LibraryMcpReadItemInput,
+  type LibraryMcpReadItemResult,
   type LibraryPageExtractionStatus,
   type LibrarySearchMode,
   type ListLibraryEntriesInput,
@@ -44,7 +49,7 @@ import {
   validateTextImportFile,
 } from "../validation.ts";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const MAX_QUERY_TERMS = 8;
 const MAX_MATCHED_PAGES_PER_SUMMARY = 8;
 const VALID_PAGE_STATUSES: ReadonlySet<string> = new Set(LIBRARY_PAGE_EXTRACTION_STATUSES);
@@ -100,8 +105,17 @@ export interface LibraryDatabase {
   readonly saveEntry: (input: SaveLibraryEntryInput) => LibraryEntry;
   readonly importTextFile: (input: ImportTextFileInput) => LibraryEntry;
   readonly getEntry: (id: string) => LibraryEntry | null;
-  readonly getEntryPages: (entryId: string) => ReadonlyArray<LibraryEntryPage>;
+  readonly getEntryPages: (
+    entryId: string,
+    range?: { readonly pageStart?: number | undefined; readonly pageEnd?: number | undefined },
+  ) => ReadonlyArray<LibraryEntryPage>;
+  readonly countBlobReferences: (sha256: string) => number;
+  readonly listReferencedBlobSha256s: () => ReadonlySet<string>;
   readonly listEntries: (input?: ListLibraryEntriesInput) => ListLibraryEntriesResult;
+  readonly readEntryForMcp: (
+    input: LibraryMcpReadItemInput,
+    options?: { readonly blobMissing?: boolean | undefined },
+  ) => LibraryMcpReadItemResult;
   readonly updateEntry: (input: UpdateLibraryEntryInput) => LibraryEntry;
   readonly deleteEntry: (input: DeleteLibraryEntryInput) => DeleteLibraryEntryResult;
   readonly composeDraft: (input: {
@@ -133,6 +147,7 @@ function rowToEntry(row: EntryRow): LibraryEntry {
     tags: parseTagsJson(row.tags_json),
     blobSha256: row.blob_sha256,
     blobBytes: row.blob_bytes,
+    blobMissing: false,
     pageCount: row.page_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -355,6 +370,9 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
             ON entries(kind, updated_at DESC, rowid DESC);
           CREATE INDEX IF NOT EXISTS idx_entry_pages_entry_page
             ON entry_pages(entry_id, physical_page);
+          CREATE INDEX IF NOT EXISTS idx_entries_blob_sha256
+            ON entries(blob_sha256)
+            WHERE blob_sha256 IS NOT NULL;
 
           PRAGMA user_version = ${SCHEMA_VERSION};
         `);
@@ -379,6 +397,27 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       FROM entry_pages
       WHERE entry_id = ?
       ORDER BY physical_page ASC
+    `);
+
+    const selectPagesRangeByEntryIdStmt = db.prepare(`
+      SELECT physical_page, text, extraction_status
+      FROM entry_pages
+      WHERE entry_id = ?
+        AND physical_page >= ?
+        AND physical_page <= ?
+      ORDER BY physical_page ASC
+    `);
+
+    const countBlobReferencesStmt = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM entries
+      WHERE blob_sha256 = ?
+    `);
+
+    const selectDistinctBlobSha256Stmt = db.prepare(`
+      SELECT DISTINCT blob_sha256
+      FROM entries
+      WHERE blob_sha256 IS NOT NULL
     `);
 
     const insertEntryStmt = db.prepare(`
@@ -415,13 +454,35 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       return row ? rowToEntry(row) : null;
     };
 
-    const getEntryPages = (entryId: string): ReadonlyArray<LibraryEntryPage> => {
-      const rows = selectPagesByEntryIdStmt.all(entryId) as unknown as ReadonlyArray<PageRow>;
+    const getEntryPages = (
+      entryId: string,
+      range?: { readonly pageStart?: number | undefined; readonly pageEnd?: number | undefined },
+    ): ReadonlyArray<LibraryEntryPage> => {
+      const hasRange = range?.pageStart !== undefined || range?.pageEnd !== undefined;
+      const rows = (hasRange
+        ? selectPagesRangeByEntryIdStmt.all(
+            entryId,
+            Math.max(1, Math.floor(range?.pageStart ?? 1)),
+            Math.max(1, Math.floor(range?.pageEnd ?? 1_000_000)),
+          )
+        : selectPagesByEntryIdStmt.all(entryId)) as unknown as ReadonlyArray<PageRow>;
       return rows.map((row) => ({
         physicalPage: row.physical_page,
         text: row.text,
         extractionStatus: row.extraction_status as LibraryPageExtractionStatus,
       }));
+    };
+
+    const countBlobReferences = (sha256: string): number => {
+      const row = countBlobReferencesStmt.get(sha256) as { readonly count: number } | undefined;
+      return Number(row?.count ?? 0);
+    };
+
+    const listReferencedBlobSha256s = (): ReadonlySet<string> => {
+      const rows = selectDistinctBlobSha256Stmt.all() as unknown as ReadonlyArray<{
+        readonly blob_sha256: string;
+      }>;
+      return new Set(rows.map((row) => row.blob_sha256));
     };
 
     const saveEntry = (input: SaveLibraryEntryInput): LibraryEntry => {
@@ -866,6 +927,104 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       });
     };
 
+    const readEntryForMcp = (
+      input: LibraryMcpReadItemInput,
+      options?: { readonly blobMissing?: boolean | undefined },
+    ): LibraryMcpReadItemResult => {
+      const id = input.id.trim();
+      if (id.length === 0) {
+        throw new LibraryValidationError("id", "Entry ID must not be empty.");
+      }
+      const entry = getEntry(id);
+      if (!entry) {
+        throw new LibraryNotFoundError(id);
+      }
+      const pageStart = input.pageStart !== undefined ? Math.floor(input.pageStart) : undefined;
+      const pageEnd = input.pageEnd !== undefined ? Math.floor(input.pageEnd) : undefined;
+      if (pageStart !== undefined && (!Number.isInteger(pageStart) || pageStart < 1)) {
+        throw new LibraryValidationError(
+          "pageStart",
+          "pageStart must be a 1-based positive integer.",
+        );
+      }
+      if (pageEnd !== undefined && (!Number.isInteger(pageEnd) || pageEnd < 1)) {
+        throw new LibraryValidationError("pageEnd", "pageEnd must be a 1-based positive integer.");
+      }
+      if (pageStart !== undefined && pageEnd !== undefined && pageEnd < pageStart) {
+        throw new LibraryValidationError(
+          "pageEnd",
+          "pageEnd must be greater than or equal to pageStart.",
+        );
+      }
+      const maxChars = Math.max(
+        256,
+        Math.min(
+          LIBRARY_MCP_MAX_READ_CHARS,
+          Math.floor(input.maxChars ?? LIBRARY_MCP_DEFAULT_READ_CHARS),
+        ),
+      );
+
+      let budget = maxChars;
+      let truncated = false;
+      const rawNote = entry.note;
+      const noteCap = Math.min(rawNote.length, Math.max(512, Math.floor(maxChars / 4)));
+      const note = rawNote.slice(0, noteCap);
+      if (note.length < rawNote.length) truncated = true;
+      budget = Math.max(0, budget - note.length);
+
+      const selectedPages = getEntryPages(
+        entry.id,
+        pageStart !== undefined || pageEnd !== undefined ? { pageStart, pageEnd } : undefined,
+      );
+
+      const pages: LibraryEntryPage[] = [];
+      let body = "";
+
+      if (selectedPages.length > 0) {
+        for (const page of selectedPages) {
+          if (budget <= 0 && page.text.length > 0) {
+            truncated = true;
+            break;
+          }
+          if (page.text.length > budget) {
+            pages.push({
+              physicalPage: page.physicalPage,
+              text: page.text.slice(0, budget),
+              extractionStatus: "truncated",
+            });
+            budget = 0;
+            truncated = true;
+            break;
+          }
+          pages.push(page);
+          budget -= page.text.length;
+        }
+      } else {
+        if (entry.body.length > budget) {
+          body = entry.body.slice(0, budget);
+          truncated = true;
+        } else {
+          body = entry.body;
+        }
+      }
+
+      return {
+        id: entry.id,
+        kind: entry.kind,
+        title: entry.title,
+        url: entry.url,
+        tags: entry.tags,
+        note,
+        pageCount: entry.pageCount,
+        revision: entry.revision,
+        blobMissing: options?.blobMissing ?? entry.blobMissing,
+        body,
+        pages,
+        truncated,
+        untrustedContentNotice: LIBRARY_UNTRUSTED_DATA_NOTICE,
+      };
+    };
+
     const rebuildSearchIndex = (): void => {
       if (!ftsEnabled) return;
       runInImmediateTransaction(db, () => {
@@ -891,7 +1050,10 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       importTextFile,
       getEntry,
       getEntryPages,
+      countBlobReferences,
+      listReferencedBlobSha256s,
       listEntries,
+      readEntryForMcp,
       updateEntry,
       deleteEntry,
       composeDraft,

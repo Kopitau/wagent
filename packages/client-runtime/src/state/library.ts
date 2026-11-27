@@ -3,7 +3,17 @@ import * as Effect from "effect/Effect";
 import { Atom, type AtomRegistry } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
-import { createEnvironmentRpcCommand, createEnvironmentRpcQueryAtomFamily } from "./runtime.ts";
+import {
+  fetchEnvironmentLibraryPdfBytes,
+  uploadEnvironmentLibraryPdf,
+  type FetchLibraryPdfBytesInput,
+  type UploadLibraryPdfInput,
+} from "./libraryHttp.ts";
+import {
+  createEnvironmentCommand,
+  createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
+} from "./runtime.ts";
 
 const LIBRARY_QUERY_IDLE_TTL_MS = 15_000;
 
@@ -35,9 +45,23 @@ export function createLibraryEnvironmentAtoms<R, E>(
       idleTtlMs: LIBRARY_QUERY_IDLE_TTL_MS,
       refreshTrigger: ({ environmentId }) => revisionAtom(environmentId),
     }),
+    wkbStatus: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:library:wkb-status",
+      tag: WS_METHODS.libraryWkbStatus,
+      staleTimeMs: 30_000,
+      idleTtlMs: LIBRARY_QUERY_IDLE_TTL_MS,
+    }),
     save: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:library:save",
       tag: WS_METHODS.librarySave,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpRevision(registry, environmentId);
+        }),
+    }),
+    fetchUrl: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:fetch-url",
+      tag: WS_METHODS.libraryFetchUrl,
       onSuccess: ({ environmentId }, registry) =>
         Effect.sync(() => {
           bumpRevision(registry, environmentId);
@@ -50,6 +74,29 @@ export function createLibraryEnvironmentAtoms<R, E>(
         Effect.sync(() => {
           bumpRevision(registry, environmentId);
         }),
+    }),
+    importFromWkb: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:import-from-wkb",
+      tag: WS_METHODS.libraryImportFromWkb,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpRevision(registry, environmentId);
+        }),
+    }),
+    uploadPdf: createEnvironmentCommand(runtime, {
+      label: "environment-data:library:upload-pdf",
+      execute: (input: UploadLibraryPdfInput, registry, environmentId) =>
+        uploadEnvironmentLibraryPdf(input).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              bumpRevision(registry, environmentId);
+            }),
+          ),
+        ),
+    }),
+    loadPdfBytes: createEnvironmentCommand(runtime, {
+      label: "environment-data:library:load-pdf-bytes",
+      execute: (input: FetchLibraryPdfBytesInput) => fetchEnvironmentLibraryPdfBytes(input),
     }),
     update: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:library:update",

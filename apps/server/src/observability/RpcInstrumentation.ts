@@ -276,6 +276,9 @@ const RPC_AGGREGATES = {
   [WS_METHODS.libraryUpdate]: "library",
   [WS_METHODS.libraryDelete]: "library",
   [WS_METHODS.libraryComposeDraft]: "library",
+  [WS_METHODS.libraryFetchUrl]: "library",
+  [WS_METHODS.libraryWkbStatus]: "library",
+  [WS_METHODS.libraryImportFromWkb]: "library",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

@@ -13,6 +13,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 const extensions = new Set(["docx", "xlsx", "pptx", "odt", "ods", "odp", "rtf", "epub", "ipynb"]);
 
+// Shared 2-slot parser concurrency cap across DocumentText and LibraryPdfExtractor so
+// isolated extraction workers cannot stack memory above ~540 MiB RSS.
+export const sharedDocumentParseSemaphore = Semaphore.makeUnsafe(2);
+
 class DocumentTextError extends Schema.TaggedError<DocumentTextError>()("DocumentTextError", {
   operation: Schema.Literal("extract"),
   path: Schema.String,
@@ -49,8 +53,7 @@ const make = Effect.gen(function* () {
   const isExecutable = yield* HostProcess.IsExecutable;
   const environment = yield* HostProcess.Environment;
   const clock = yield* Clock.Clock;
-  // A large DOCX worker peaks near 270 MiB RSS, so two slots bound parser memory near 540 MiB.
-  const lock = yield* Semaphore.make(2);
+  const lock = sharedDocumentParseSemaphore;
   const failed = new Map<string, number>();
   // A cancelled extraction can still be publishing while its retry runs in the other slot.
   let attempt = 0;

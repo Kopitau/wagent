@@ -8,6 +8,8 @@ import {
   type LibraryComposeDraftInput,
   type LibraryDeleteInput,
   type LibraryEntry,
+  type LibraryFetchUrlInput,
+  type LibraryImportFromWkbInput,
   type LibraryImportTextFileInput,
   type LibraryListInput,
   type LibrarySaveInput,
@@ -160,11 +162,31 @@ vi.mock(import("../../state/library"), (() => {
     __notifyMockLibrary: notify,
     libraryEnvironment: {
       save: makeCommand("save"),
+      fetchUrl: makeCommand("fetchUrl"),
       importTextFile: makeCommand("importTextFile"),
+      importFromWkb: makeCommand("importFromWkb"),
+      uploadPdf: makeCommand("uploadPdf"),
+      loadPdfBytes: makeCommand("loadPdfBytes"),
       update: makeCommand("update"),
       delete: makeCommand("delete"),
       composeDraft: makeCommand("composeDraft"),
     },
+    useLibraryWkbStatus: (environmentId: EnvironmentId | null, enabled: boolean) => ({
+      data:
+        enabled && environmentId === ENV_A
+          ? {
+              available: true,
+              mode: "dual" as const,
+              remoteUrl: "https://kb.example.invalid/kb/mcp",
+            }
+          : { available: false, mode: "unavailable" as const, remoteUrl: null },
+      dataUpdatedAt: 1,
+      error: null,
+      failure: null,
+      isPending: false,
+      isSuccess: enabled && environmentId !== null,
+      refresh: notify,
+    }),
     useLibraryList: (
       environmentId: EnvironmentId | null,
       input: LibraryListInput,
@@ -305,6 +327,7 @@ vi.mock(import("../../state/use-atom-command"), (() => ({
             tags: input.tags ?? [],
             blobSha256: null,
             blobBytes: null,
+            blobMissing: false,
             pageCount: 0,
             createdAt: now,
             updatedAt: now,
@@ -313,6 +336,79 @@ vi.mock(import("../../state/use-atom-command"), (() => ({
           envState.entries.set(entry.id, entry);
           __notifyMockLibrary();
           return Exit.succeed(entry);
+        }
+        case "fetchUrl": {
+          const input = target.input as LibraryFetchUrlInput;
+          const entry: LibraryEntry = {
+            id: mockStore.nextId(),
+            kind: input.url.includes("mp.weixin.qq.com") ? "wechat" : "web",
+            title: input.title ?? "Fetched Web Article",
+            url: input.url,
+            body: "",
+            note: input.note ?? "",
+            tags: input.tags ?? [],
+            blobSha256: null,
+            blobBytes: null,
+            blobMissing: false,
+            pageCount: 0,
+            createdAt: now,
+            updatedAt: now,
+            revision: 1,
+          };
+          envState.entries.set(entry.id, entry);
+          __notifyMockLibrary();
+          return Exit.succeed({
+            entry,
+            fetched: false,
+            fallbackReason: "WeChat requires verification; saved link only.",
+          });
+        }
+        case "importFromWkb": {
+          const input = target.input as LibraryImportFromWkbInput;
+          const entry: LibraryEntry = {
+            id: mockStore.nextId(),
+            kind: "video",
+            title: "Bilibili Keynote Talk",
+            url: input.source,
+            body: "[00:00:01] Multimodal transcript extracted by wkb.",
+            note: input.note ?? "",
+            tags: input.tags ?? [],
+            blobSha256: null,
+            blobBytes: null,
+            blobMissing: false,
+            pageCount: 0,
+            createdAt: now,
+            updatedAt: now,
+            revision: 1,
+          };
+          envState.entries.set(entry.id, entry);
+          __notifyMockLibrary();
+          return Exit.succeed({ entry, warnings: [] });
+        }
+        case "uploadPdf": {
+          const input = target.input as { readonly fileName: string; readonly bytes: Uint8Array };
+          const entry: LibraryEntry = {
+            id: mockStore.nextId(),
+            kind: "pdf",
+            title: input.fileName.replace(/\.pdf$/iu, ""),
+            url: null,
+            body: "[p.1]\nUploaded PDF extracted text",
+            note: "",
+            tags: [],
+            blobSha256: "a".repeat(64),
+            blobBytes: input.bytes.byteLength,
+            blobMissing: true,
+            pageCount: 1,
+            createdAt: now,
+            updatedAt: now,
+            revision: 1,
+          };
+          envState.entries.set(entry.id, entry);
+          __notifyMockLibrary();
+          return Exit.succeed(entry);
+        }
+        case "loadPdfBytes": {
+          return Exit.succeed(new ArrayBuffer(0));
         }
         case "importTextFile": {
           const input = target.input as LibraryImportTextFileInput;
@@ -331,6 +427,7 @@ vi.mock(import("../../state/use-atom-command"), (() => ({
             tags: input.tags ?? [],
             blobSha256: null,
             blobBytes: null,
+            blobMissing: false,
             pageCount: 0,
             createdAt: now,
             updatedAt: now,
@@ -458,6 +555,7 @@ function setupMultiEnvironmentFixture() {
           tags: ["isolated"],
           blobSha256: null,
           blobBytes: null,
+          blobMissing: false,
           pageCount: 0,
           createdAt: "2026-11-24T08:00:00.000Z",
           updatedAt: "2026-11-24T08:00:00.000Z",
@@ -575,4 +673,56 @@ it("runs the M1a vertical slice: collect, import MD, conflict handling, same-env
 
   await expect.element(screen.getByText("Library unavailable on this environment")).toBeVisible();
   expect(mockStore.listCalls.some((call) => call.environmentId === ENV_LEGACY)).toBe(false);
+});
+
+it("supports M1b PDF upload with missing-blob degradation and wkb multimodal import", async () => {
+  mockStore.reset();
+  mockStore.environments.push({
+    environmentId: ENV_A,
+    label: "Env A",
+    supportsLibrary: true,
+    canRead: true,
+    canWrite: true,
+  });
+  mockStore.byEnv.set(ENV_A, {
+    entries: new Map(),
+    existingDraftTextByProject: new Map(),
+  });
+
+  await using screen = await render(
+    <RegistryProvider>
+      <SidebarProvider>
+        <LibraryPage requestedEnvironmentId={ENV_A} />
+      </SidebarProvider>
+    </RegistryProvider>,
+  );
+
+  // 1. Upload PDF via file input -> opens with extracted text and missing-blob warning banner
+  const pdfInput = screen.container.querySelector<HTMLInputElement>(
+    'input[data-testid="library-import-pdf-input"]',
+  );
+  expect(pdfInput).not.toBeNull();
+  const pdfFile = new File(["%PDF-1.4\nminimal"], "quantum-paper.pdf", {
+    type: "application/pdf",
+  });
+  const dt = new DataTransfer();
+  dt.items.add(pdfFile);
+  Object.defineProperty(pdfInput!, "files", { value: dt.files, configurable: true });
+  pdfInput!.dispatchEvent(new Event("change", { bubbles: true }));
+
+  await expect.element(screen.getByRole("button", { name: /quantum-paper/ })).toBeVisible();
+  await expect.element(screen.getByText("Original PDF file missing")).toBeVisible();
+
+  // 2. Import multimodal Bilibili talk via wkb dialog
+  await userEvent.click(screen.getByRole("button", { name: "Import via wkb" }));
+  await userEvent.fill(
+    page.getByLabelText("Source URL"),
+    "https://www.bilibili.com/video/BV1test123",
+  );
+  await userEvent.click(page.getByRole("button", { name: "Extract and import" }));
+
+  await expect.element(screen.getByRole("button", { name: /Bilibili Keynote Talk/ })).toBeVisible();
+  await expect
+    .element(screen.getByLabelText("Captured text"))
+    .toHaveValue("[00:00:01] Multimodal transcript extracted by wkb.");
 });

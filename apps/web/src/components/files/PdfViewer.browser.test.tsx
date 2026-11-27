@@ -381,3 +381,26 @@ it("Escape in Find in PDF clears it without closing the panel sheet", async () =
     URL.revokeObjectURL(url);
   }
 });
+
+it("loads PDF bytes via injectable loadBytes without calling raw fetch", async () => {
+  const bytes = await testPdf().arrayBuffer();
+  const loadBytes = vi.fn(async () => bytes);
+  const fetchSpy = vi.spyOn(window, "fetch");
+  try {
+    const container = document.createElement("div");
+    container.style.cssText = "display:flex;width:500px;height:600px";
+    await using screen = await render(
+      <PdfViewer loadBytes={loadBytes} sourceKey="remote-env:entry-1" title="Remote Auth PDF" />,
+      { container },
+    );
+    await expect.element(screen.getByText("1 / 2 pages"), { timeout: 10_000 }).toBeVisible();
+    expect(loadBytes).toHaveBeenCalledOnce();
+    expect(
+      fetchSpy.mock.calls.some(
+        ([input]) => typeof input === "string" && input.includes("/api/library/items/"),
+      ),
+    ).toBe(false);
+  } finally {
+    fetchSpy.mockRestore();
+  }
+});

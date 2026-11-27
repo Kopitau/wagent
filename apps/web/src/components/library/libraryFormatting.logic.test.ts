@@ -2,9 +2,11 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  buildLibraryItemRouteHref,
   formatLibraryUrlHost,
   formatTagsInput,
   parseTagsInput,
+  readPdfUploadFile,
   readUtf8TextImportFile,
   resolveActiveLibraryEnvironmentId,
   toggleDraftSelection,
@@ -57,5 +59,21 @@ describe("libraryFormatting.logic", () => {
     const invalidUtf8 = new File([new Uint8Array([0xff, 0xfe, 0x00])], "bad.txt");
     const utf8Result = await readUtf8TextImportFile(invalidUtf8);
     expect(utf8Result.ok).toBe(false);
+  });
+
+  it("validates PDF uploads and builds in-app authenticated reader links", async () => {
+    const validPdf = new File(["%PDF-1.4\nhello"], "paper.pdf", { type: "application/pdf" });
+    const validRes = await readPdfUploadFile(validPdf);
+    expect(validRes.ok).toBe(true);
+
+    const wrongExt = new File(["%PDF-1.4\nhello"], "paper.txt", { type: "text/plain" });
+    expect((await readPdfUploadFile(wrongExt)).ok).toBe(false);
+
+    const badMagic = new File(["plain text"], "fake.pdf", { type: "application/pdf" });
+    expect((await readPdfUploadFile(badMagic)).ok).toBe(false);
+
+    expect(buildLibraryItemRouteHref("entry/1", EnvironmentId.make("env-a"))).toBe(
+      "/library/entry%2F1?env=env-a",
+    );
   });
 });

@@ -2,8 +2,20 @@ import * as Schema from "effect/Schema";
 
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 
-export const LibraryEntryKind = Schema.Literals(["note", "web", "wechat", "file", "pdf"]);
+export const LibraryEntryKind = Schema.Literals([
+  "note",
+  "web",
+  "wechat",
+  "file",
+  "pdf",
+  "video",
+  "epub",
+]);
 export type LibraryEntryKind = typeof LibraryEntryKind.Type;
+
+export const LIBRARY_UPLOAD_PDF_PATH = "/api/library/upload";
+export const libraryItemPdfPath = (id: string): string =>
+  `/api/library/items/${encodeURIComponent(id)}/pdf`;
 
 export const LibrarySearchMode = Schema.Literals(["browse", "fts5", "substring"]);
 export type LibrarySearchMode = typeof LibrarySearchMode.Type;
@@ -54,6 +66,7 @@ export const LibraryEntry = Schema.Struct({
   tags: LibraryTags,
   blobSha256: Schema.NullOr(TrimmedNonEmptyString),
   blobBytes: Schema.NullOr(NonNegativeInt),
+  blobMissing: Schema.Boolean,
   pageCount: NonNegativeInt,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -152,6 +165,51 @@ export const LibraryComposeDraftResult = Schema.Struct({
 });
 export type LibraryComposeDraftResult = typeof LibraryComposeDraftResult.Type;
 
+export const LibraryFetchUrlInput = Schema.Struct({
+  url: LibraryUrl,
+  title: Schema.optional(LibraryTitle),
+  note: Schema.optional(LibraryNote),
+  tags: Schema.optional(LibraryTags),
+  allowFallback: Schema.optional(Schema.Boolean),
+});
+export type LibraryFetchUrlInput = typeof LibraryFetchUrlInput.Type;
+
+export const LibraryFetchUrlResult = Schema.Struct({
+  entry: LibraryEntry,
+  fetched: Schema.Boolean,
+  fallbackReason: Schema.NullOr(Schema.String),
+});
+export type LibraryFetchUrlResult = typeof LibraryFetchUrlResult.Type;
+
+export const LibraryWkbMode = Schema.Literals(["local", "remote", "dual", "unavailable"]);
+export type LibraryWkbMode = typeof LibraryWkbMode.Type;
+
+export const LibraryWkbStatusResult = Schema.Struct({
+  available: Schema.Boolean,
+  mode: LibraryWkbMode,
+  remoteUrl: Schema.NullOr(LibraryUrl),
+});
+export type LibraryWkbStatusResult = typeof LibraryWkbStatusResult.Type;
+
+export const LibraryImportFromWkbInput = Schema.Struct({
+  source: TrimmedNonEmptyString.check(Schema.isMaxLength(LIBRARY_RPC_MAX_URL_CHARS)),
+  generatePdf: Schema.optional(Schema.Boolean),
+  note: Schema.optional(LibraryNote),
+  tags: Schema.optional(LibraryTags),
+});
+export type LibraryImportFromWkbInput = typeof LibraryImportFromWkbInput.Type;
+
+export const LibraryImportFromWkbResult = Schema.Struct({
+  entry: LibraryEntry,
+  warnings: Schema.Array(Schema.String),
+});
+export type LibraryImportFromWkbResult = typeof LibraryImportFromWkbResult.Type;
+
+export const LibraryUploadPdfResult = Schema.Struct({
+  entry: LibraryEntry,
+});
+export type LibraryUploadPdfResult = typeof LibraryUploadPdfResult.Type;
+
 export class LibraryValidationError extends Schema.TaggedError<LibraryValidationError>()(
   "LibraryValidationError",
   {
@@ -211,6 +269,38 @@ export class LibraryStorageError extends Schema.TaggedError<LibraryStorageError>
   }
 }
 
+export class LibrarySsrfRejectedError extends Schema.TaggedError<LibrarySsrfRejectedError>()(
+  "LibrarySsrfRejectedError",
+  {
+    host: Schema.String.check(Schema.isMaxLength(255)),
+    reason: TrimmedNonEmptyString.check(Schema.isMaxLength(240)),
+  },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
+export class LibraryUploadTooLargeError extends Schema.TaggedError<LibraryUploadTooLargeError>()(
+  "LibraryUploadTooLargeError",
+  {
+    maxBytes: NonNegativeInt,
+    receivedBytes: NonNegativeInt,
+  },
+) {
+  override get message(): string {
+    return `Uploaded PDF exceeded the maximum size of ${this.maxBytes} bytes.`;
+  }
+}
+
+export class LibraryWkbError extends Schema.TaggedError<LibraryWkbError>()("LibraryWkbError", {
+  reason: TrimmedNonEmptyString.check(Schema.isMaxLength(400)),
+}) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 export const isLibraryEditConflictError = Schema.is(LibraryEditConflictError);
 
 export const LibraryRpcError = Schema.Union([
@@ -219,5 +309,8 @@ export const LibraryRpcError = Schema.Union([
   LibraryDuplicateUrlError,
   LibraryEditConflictError,
   LibraryStorageError,
+  LibrarySsrfRejectedError,
+  LibraryUploadTooLargeError,
+  LibraryWkbError,
 ]);
 export type LibraryRpcError = typeof LibraryRpcError.Type;

@@ -1,6 +1,7 @@
 import type { EnvironmentId, LibraryEntryKind } from "@t3tools/contracts";
 import {
   LIBRARY_MAX_DRAFT_ITEMS,
+  LIBRARY_MAX_PDF_UPLOAD_BYTES,
   decodeUtf8TextBytes,
   validateTextImportFile,
 } from "@t3tools/research-library";
@@ -90,4 +91,57 @@ export async function readUtf8TextImportFile(file: File): Promise<TextFileDecode
 
 export function isLinkEntryKind(kind: LibraryEntryKind): boolean {
   return kind === "web" || kind === "wechat";
+}
+
+export type PdfUploadFileReadResult =
+  | { readonly ok: true; readonly fileName: string; readonly bytes: Uint8Array }
+  | { readonly ok: false; readonly message: string };
+
+const PDF_HEADER_ASCII = "%PDF-";
+
+export async function readPdfUploadFile(file: File): Promise<PdfUploadFileReadResult> {
+  if (!file.name.toLowerCase().endsWith(".pdf")) {
+    return {
+      ok: false,
+      message: m(msg("Only PDF (.pdf) files can be uploaded here.")),
+    };
+  }
+  if (file.size === 0) {
+    return {
+      ok: false,
+      message: m(msg("Selected PDF file is empty.")),
+    };
+  }
+  if (file.size > LIBRARY_MAX_PDF_UPLOAD_BYTES) {
+    return {
+      ok: false,
+      message: m(msg("PDF file exceeds the 20 MiB upload limit.")),
+    };
+  }
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (bytes.byteLength > LIBRARY_MAX_PDF_UPLOAD_BYTES) {
+      return {
+        ok: false,
+        message: m(msg("PDF file exceeds the 20 MiB upload limit.")),
+      };
+    }
+    const probe = new TextDecoder("latin1").decode(bytes.subarray(0, 1024));
+    if (!probe.includes(PDF_HEADER_ASCII)) {
+      return {
+        ok: false,
+        message: m(msg("Selected file does not appear to be a valid PDF document.")),
+      };
+    }
+    return { ok: true, fileName: file.name, bytes };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : m(msg("Could not read PDF file.")),
+    };
+  }
+}
+
+export function buildLibraryItemRouteHref(entryId: string, environmentId: EnvironmentId): string {
+  return `/library/${encodeURIComponent(entryId)}?env=${encodeURIComponent(environmentId)}`;
 }
