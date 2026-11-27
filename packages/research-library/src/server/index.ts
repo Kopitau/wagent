@@ -16,6 +16,7 @@ export {
   type LibraryDatabase,
   type OpenLibraryDatabaseOptions,
 } from "./database.ts";
+export { searchImaKnowledgeBase, type ImaSearchOptions } from "./imaClient.ts";
 export {
   extractPdfPagesFromFile,
   resolvePdfjsAssetLocations,

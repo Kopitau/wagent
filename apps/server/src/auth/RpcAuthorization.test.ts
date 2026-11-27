@@ -1237,3 +1237,95 @@ it.effect(
       expect(configUpdates).toBe(1);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "enforces dual settings+providers scope on library.updateImaConfig and operate scope on library.runReadingAiAction",
+  () =>
+    Effect.gen(function* () {
+      const kept = new Set<string>([
+        WS_METHODS.libraryImaStatus,
+        WS_METHODS.libraryImaSearch,
+        WS_METHODS.libraryRunReadingAiAction,
+        WS_METHODS.libraryUpdateImaConfig,
+      ]);
+      const group = WsRpcGroup.omit(
+        ...[...WsRpcGroup.requests.keys()].filter(
+          (
+            tag,
+          ): tag is Exclude<
+            keyof typeof RPC_REQUIRED_SCOPES,
+            | typeof WS_METHODS.libraryImaStatus
+            | typeof WS_METHODS.libraryImaSearch
+            | typeof WS_METHODS.libraryRunReadingAiAction
+            | typeof WS_METHODS.libraryUpdateImaConfig
+          > => !kept.has(tag),
+        ),
+      );
+      let imaUpdates = 0;
+      const sampleImaView = {
+        enabled: true,
+        baseUrl: "https://ima.example.com/api",
+        knowledgeBaseId: "kb-1",
+        hasApiKey: true,
+      };
+      const handlers = Layer.mergeAll(
+        group.toLayerHandler(WS_METHODS.libraryImaStatus, () => Effect.succeed(sampleImaView)),
+        group.toLayerHandler(WS_METHODS.libraryImaSearch, () => Effect.succeed({ hits: [] })),
+        group.toLayerHandler(WS_METHODS.libraryRunReadingAiAction, (input) =>
+          Effect.succeed({
+            action: input.action,
+            route: "direct_api" as const,
+            modelId: "tg-1/gpt-4o-mini",
+            payloadJson: "{}",
+          }),
+        ),
+        group.toLayerHandler(WS_METHODS.libraryUpdateImaConfig, () =>
+          Effect.sync(() => {
+            imaUpdates += 1;
+            return sampleImaView;
+          }),
+        ),
+      );
+
+      const reader = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+      );
+      expect((yield* reader[WS_METHODS.libraryImaStatus]()).enabled).toBe(true);
+      expect((yield* reader[WS_METHODS.libraryImaSearch]({ query: "attention" })).hits).toEqual([]);
+      expect(
+        yield* reader[WS_METHODS.libraryRunReadingAiAction]({
+          entryId: "entry-1",
+          action: "summary5",
+        }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthOrchestrationOperateScope });
+
+      const settingsOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthSettingsWriteScope]))),
+      );
+      expect(
+        yield* settingsOnly[WS_METHODS.libraryUpdateImaConfig]({ enabled: true }).pipe(Effect.flip),
+      ).toMatchObject({ requiredPermission: AuthProvidersManageScope });
+
+      const providersOnly = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthProvidersManageScope]))),
+      );
+      expect(
+        yield* providersOnly[WS_METHODS.libraryUpdateImaConfig]({ enabled: true }).pipe(
+          Effect.flip,
+        ),
+      ).toMatchObject({ requiredPermission: AuthSettingsWriteScope });
+      expect(imaUpdates).toBe(0);
+
+      const dualAdmin = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            handlers,
+            RpcAuthorization.layer([AuthSettingsWriteScope, AuthProvidersManageScope]),
+          ),
+        ),
+      );
+      const updated = yield* dualAdmin[WS_METHODS.libraryUpdateImaConfig]({ enabled: true });
+      expect(updated.hasApiKey).toBe(true);
+      expect(imaUpdates).toBe(1);
+    }).pipe(Effect.scoped),
+);

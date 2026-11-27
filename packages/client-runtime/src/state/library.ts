@@ -23,14 +23,32 @@ export function createLibraryEnvironmentAtoms<R, E>(
   const revisionAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make(0).pipe(Atom.withLabel(`environment-data:library:revision:${environmentId}`)),
   );
+  const readingRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(0).pipe(Atom.withLabel(`environment-data:library:reading-revision:${environmentId}`)),
+  );
+  const imaRevisionAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(0).pipe(Atom.withLabel(`environment-data:library:ima-revision:${environmentId}`)),
+  );
 
   const bumpRevision = (registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) => {
     registry.update(revisionAtom(environmentId), (current) => current + 1);
   };
+  const bumpReadingRevision = (
+    registry: AtomRegistry.AtomRegistry,
+    environmentId: EnvironmentId,
+  ) => {
+    registry.update(readingRevisionAtom(environmentId), (current) => current + 1);
+  };
+  const bumpImaRevision = (registry: AtomRegistry.AtomRegistry, environmentId: EnvironmentId) => {
+    registry.update(imaRevisionAtom(environmentId), (current) => current + 1);
+  };
 
   return {
     revisionAtom,
+    readingRevisionAtom,
+    imaRevisionAtom,
     invalidate: bumpRevision,
+    invalidateReading: bumpReadingRevision,
     list: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:library:list",
       tag: WS_METHODS.libraryList,
@@ -117,6 +135,106 @@ export function createLibraryEnvironmentAtoms<R, E>(
     composeDraft: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:library:compose-draft",
       tag: WS_METHODS.libraryComposeDraft,
+    }),
+    readingState: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:library:reading-state",
+      tag: WS_METHODS.libraryGetReadingState,
+      staleTimeMs: 0,
+      idleTtlMs: LIBRARY_QUERY_IDLE_TTL_MS,
+      refreshTrigger: ({ environmentId }) => readingRevisionAtom(environmentId),
+    }),
+    readingModels: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:library:reading-models",
+      tag: WS_METHODS.libraryListReadingModels,
+      staleTimeMs: 30_000,
+      idleTtlMs: LIBRARY_QUERY_IDLE_TTL_MS,
+    }),
+    imaStatus: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:library:ima-status",
+      tag: WS_METHODS.libraryImaStatus,
+      staleTimeMs: 15_000,
+      idleTtlMs: LIBRARY_QUERY_IDLE_TTL_MS,
+      refreshTrigger: ({ environmentId }) => imaRevisionAtom(environmentId),
+    }),
+    setReadingPosition: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:set-reading-position",
+      tag: WS_METHODS.librarySetReadingPosition,
+    }),
+    upsertReadingParagraph: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:upsert-reading-paragraph",
+      tag: WS_METHODS.libraryUpsertReadingParagraph,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    upsertReadingQuestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:upsert-reading-question",
+      tag: WS_METHODS.libraryUpsertReadingQuestion,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    deleteReadingQuestion: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:delete-reading-question",
+      tag: WS_METHODS.libraryDeleteReadingQuestion,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    upsertReadingInsight: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:upsert-reading-insight",
+      tag: WS_METHODS.libraryUpsertReadingInsight,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    setReadingPreference: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:set-reading-preference",
+      tag: WS_METHODS.librarySetReadingPreference,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    runReadingAiAction: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:run-reading-ai-action",
+      tag: WS_METHODS.libraryRunReadingAiAction,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    importGuide: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:import-guide",
+      tag: WS_METHODS.libraryImportGuide,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpReadingRevision(registry, environmentId);
+        }),
+    }),
+    syncWkbAnnotations: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:sync-wkb-annotations",
+      tag: WS_METHODS.librarySyncWkbAnnotations,
+    }),
+    submitToWkb: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:submit-to-wkb",
+      tag: WS_METHODS.librarySubmitToWkb,
+    }),
+    updateImaConfig: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:update-ima-config",
+      tag: WS_METHODS.libraryUpdateImaConfig,
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          bumpImaRevision(registry, environmentId);
+        }),
+    }),
+    imaSearch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:library:ima-search",
+      tag: WS_METHODS.libraryImaSearch,
     }),
   };
 }

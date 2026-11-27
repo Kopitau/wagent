@@ -1,0 +1,160 @@
+/* Faithful DeepRead v1.4.0 visual tokens & workbench styling (scoped via data-deepread attributes) */
+
+[data-deepread="workbench"] {
+  --dr-surface: #ffffff;
+  --dr-surface-soft: #f4f6fa;
+  --dr-canvas: #eef1f5;
+  --dr-text: #202939;
+  --dr-muted: #526075;
+  --dr-border: #d8dee8;
+  --dr-accent: #2459a9;
+  --dr-accent-soft: rgba(36, 89, 169, 0.12);
+  --dr-success: #14664c;
+  --dr-success-soft: rgba(20, 102, 76, 0.12);
+  --dr-warning: #8b5710;
+  --dr-warning-soft: rgba(217, 119, 6, 0.14);
+  --dr-danger: #b4233b;
+  --dr-figure: #d97706;
+  --dr-table: #0d9488;
+  --dr-card-font-size: 13px;
+  --dr-rail-width: 280px;
+
+  background-color: var(--dr-canvas);
+  color: var(--dr-text);
+}
+
+.dark [data-deepread="workbench"] {
+  --dr-surface: #151b26;
+  --dr-surface-soft: #1c2433;
+  --dr-canvas: #0f141e;
+  --dr-text: #e7edf6;
+  --dr-muted: #98a6bc;
+  --dr-border: #2a3548;
+  --dr-accent: #6ea4ff;
+  --dr-accent-soft: rgba(110, 164, 255, 0.16);
+  --dr-success: #4cc39b;
+  --dr-success-soft: rgba(76, 195, 155, 0.16);
+  --dr-warning: #f0b354;
+  --dr-warning-soft: rgba(240, 179, 84, 0.16);
+  --dr-danger: #f57589;
+  --dr-figure: #f59e0b;
+  --dr-table: #2dd4bf;
+}
+
+[data-deepread="structure-bar"] {
+  background-color: var(--dr-surface);
+  border-bottom: 1px solid var(--dr-border);
+  color: var(--dr-text);
+}
+
+[data-deepread="rail"] {
+  width: var(--dr-rail-width);
+  min-width: 200px;
+  max-width: 420px;
+  position: relative;
+}
+
+[data-deepread="card"] {
+  background-color: var(--dr-surface);
+  border: 1px solid var(--dr-border);
+  border-left-width: 4px;
+  border-radius: 8px;
+  color: var(--dr-text);
+  font-size: var(--dr-card-font-size);
+  line-height: 1.45;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  transition:
+    box-shadow 140ms ease,
+    border-color 140ms ease;
+}
+
+[data-deepread="card"]:hover {
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.1);
+}
+
+[data-deepread="card"][data-active="true"] {
+  box-shadow:
+    0 0 0 2px var(--dr-accent-soft),
+    0 4px 12px rgba(15, 23, 42, 0.12);
+}
+
+[data-deepread="card"][data-card-kind="figure"] {
+  border-left-color: var(--dr-figure);
+}
+
+[data-deepread="card"][data-card-kind="table"] {
+  border-left-color: var(--dr-table);
+}
+
+[data-deepread="role-badge"] {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 2px 6px;
+  letter-spacing: 0.01em;
+}
+
+[data-deepread="note-box"] {
+  background-color: var(--dr-success-soft);
+  border-left: 3px solid var(--dr-success);
+  border-radius: 4px;
+  color: var(--dr-text);
+  padding: 6px 8px;
+}
+
+[data-deepread="muddiest-wrap"][data-pressed="true"] {
+  background-color: var(--dr-warning-soft);
+  border-radius: 6px;
+  color: var(--dr-warning);
+}
+
+[data-deepread="translation-serif"] {
+  font-family: Georgia, "Noto Serif SC", "Songti SC", serif;
+  color: var(--dr-text);
+  line-height: 1.65;
+}
+
+[data-deepread="popover"] {
+  background-color: var(--dr-surface);
+  border: 1px solid var(--dr-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  color: var(--dr-text);
+  max-width: 380px;
+  z-index: 40;
+}
+
+[data-deepread="para-block"][data-highlighted="true"] {
+  background-color: rgba(250, 204, 21, 0.24);
+  border-bottom: 2px solid rgba(217, 119, 6, 0.65);
+}
+
+.dark [data-deepread="para-block"][data-highlighted="true"] {
+  background-color: rgba(250, 204, 21, 0.18);
+  border-bottom: 2px solid rgba(245, 158, 11, 0.72);
+}
+
+[data-deepread="para-block"][data-active="true"] {
+  outline: 2px solid var(--dr-accent);
+  background-color: var(--dr-accent-soft);
+}
+
+[data-deepread="pdf-sheet"] {
+  background-color: var(--dr-surface);
+  color: var(--dr-text);
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.14);
+  border-radius: 4px;
+  position: relative;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-deepread="card"],
+  [data-deepread="workbench"] * {
+    transition: none !important;
+    animation: none !important;
+  }
+}

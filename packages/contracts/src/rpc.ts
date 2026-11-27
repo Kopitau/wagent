@@ -2,20 +2,45 @@ import {
   LibraryComposeDraftInput,
   LibraryComposeDraftResult,
   LibraryDeleteInput,
+  LibraryDeleteReadingQuestionInput,
+  LibraryDeleteReadingQuestionResult,
   LibraryDeleteResult,
   LibraryEntry,
   LibraryFetchUrlInput,
   LibraryFetchUrlResult,
   LibraryGetInput,
+  LibraryGetReadingStateInput,
   LibraryGetResult,
+  LibraryImaConfigView,
+  LibraryImaSearchInput,
+  LibraryImaSearchResult,
   LibraryImportFromWkbInput,
   LibraryImportFromWkbResult,
+  LibraryImportGuideInput,
   LibraryImportTextFileInput,
   LibraryListInput,
+  LibraryListReadingModelsResult,
   LibraryListResult,
+  LibraryReadingInsightContract,
+  LibraryReadingParagraphContract,
+  LibraryReadingQuestionContract,
+  LibraryReadingStateResult,
   LibraryRpcError,
+  LibraryRunReadingAiActionInput,
+  LibraryRunReadingAiActionResult,
   LibrarySaveInput,
+  LibrarySetReadingPositionInput,
+  LibrarySetReadingPositionResult,
+  LibrarySetReadingPreferenceInput,
+  LibrarySubmitToWkbInput,
+  LibrarySubmitToWkbResult,
+  LibrarySyncWkbAnnotationsInput,
+  LibrarySyncWkbAnnotationsResult,
+  LibraryUpdateImaConfigInput,
   LibraryUpdateInput,
+  LibraryUpsertReadingInsightInput,
+  LibraryUpsertReadingParagraphInput,
+  LibraryUpsertReadingQuestionInput,
   LibraryWkbStatusResult,
 } from "./library.ts";
 import {
@@ -772,6 +797,21 @@ export const WS_METHODS = {
   libraryFetchUrl: "library.fetchUrl",
   libraryWkbStatus: "library.wkbStatus",
   libraryImportFromWkb: "library.importFromWkb",
+  libraryGetReadingState: "library.getReadingState",
+  librarySetReadingPosition: "library.setReadingPosition",
+  libraryUpsertReadingParagraph: "library.upsertReadingParagraph",
+  libraryUpsertReadingQuestion: "library.upsertReadingQuestion",
+  libraryDeleteReadingQuestion: "library.deleteReadingQuestion",
+  libraryUpsertReadingInsight: "library.upsertReadingInsight",
+  librarySetReadingPreference: "library.setReadingPreference",
+  libraryListReadingModels: "library.listReadingModels",
+  libraryRunReadingAiAction: "library.runReadingAiAction",
+  libraryImportGuide: "library.importGuide",
+  librarySyncWkbAnnotations: "library.syncWkbAnnotations",
+  librarySubmitToWkb: "library.submitToWkb",
+  libraryImaStatus: "library.imaStatus",
+  libraryUpdateImaConfig: "library.updateImaConfig",
+  libraryImaSearch: "library.imaSearch",
 
   wagentStatus: "wagent.status",
   wagentSend: "wagent.send",
@@ -1801,6 +1841,94 @@ const WsLibraryImportFromWkbRpc = Rpc.make(WS_METHODS.libraryImportFromWkb, {
   error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
 });
 
+const WsLibraryGetReadingStateRpc = Rpc.make(WS_METHODS.libraryGetReadingState, {
+  payload: LibraryGetReadingStateInput,
+  success: LibraryReadingStateResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibrarySetReadingPositionRpc = Rpc.make(WS_METHODS.librarySetReadingPosition, {
+  payload: LibrarySetReadingPositionInput,
+  success: LibrarySetReadingPositionResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryUpsertReadingParagraphRpc = Rpc.make(WS_METHODS.libraryUpsertReadingParagraph, {
+  payload: LibraryUpsertReadingParagraphInput,
+  success: LibraryReadingParagraphContract,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryUpsertReadingQuestionRpc = Rpc.make(WS_METHODS.libraryUpsertReadingQuestion, {
+  payload: LibraryUpsertReadingQuestionInput,
+  success: LibraryReadingQuestionContract,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryDeleteReadingQuestionRpc = Rpc.make(WS_METHODS.libraryDeleteReadingQuestion, {
+  payload: LibraryDeleteReadingQuestionInput,
+  success: LibraryDeleteReadingQuestionResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryUpsertReadingInsightRpc = Rpc.make(WS_METHODS.libraryUpsertReadingInsight, {
+  payload: LibraryUpsertReadingInsightInput,
+  success: LibraryReadingInsightContract,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibrarySetReadingPreferenceRpc = Rpc.make(WS_METHODS.librarySetReadingPreference, {
+  payload: LibrarySetReadingPreferenceInput,
+  success: Schema.Void,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryListReadingModelsRpc = Rpc.make(WS_METHODS.libraryListReadingModels, {
+  success: LibraryListReadingModelsResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryRunReadingAiActionRpc = Rpc.make(WS_METHODS.libraryRunReadingAiAction, {
+  payload: LibraryRunReadingAiActionInput,
+  success: LibraryRunReadingAiActionResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryImportGuideRpc = Rpc.make(WS_METHODS.libraryImportGuide, {
+  payload: LibraryImportGuideInput,
+  success: LibraryReadingInsightContract,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibrarySyncWkbAnnotationsRpc = Rpc.make(WS_METHODS.librarySyncWkbAnnotations, {
+  payload: LibrarySyncWkbAnnotationsInput,
+  success: LibrarySyncWkbAnnotationsResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibrarySubmitToWkbRpc = Rpc.make(WS_METHODS.librarySubmitToWkb, {
+  payload: LibrarySubmitToWkbInput,
+  success: LibrarySubmitToWkbResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryImaStatusRpc = Rpc.make(WS_METHODS.libraryImaStatus, {
+  success: LibraryImaConfigView,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryUpdateImaConfigRpc = Rpc.make(WS_METHODS.libraryUpdateImaConfig, {
+  payload: LibraryUpdateImaConfigInput,
+  success: LibraryImaConfigView,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryImaSearchRpc = Rpc.make(WS_METHODS.libraryImaSearch, {
+  payload: LibraryImaSearchInput,
+  success: LibraryImaSearchResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
 const WsWagentStatusRpc = Rpc.make(WS_METHODS.wagentStatus, {
   success: WagentStatusResult,
   error: Schema.Union([WagentRpcError, EnvironmentAuthorizationError]),
@@ -2800,6 +2928,21 @@ export const WsRpcGroup = RpcGroup.make(
   WsLibraryFetchUrlRpc,
   WsLibraryWkbStatusRpc,
   WsLibraryImportFromWkbRpc,
+  WsLibraryGetReadingStateRpc,
+  WsLibrarySetReadingPositionRpc,
+  WsLibraryUpsertReadingParagraphRpc,
+  WsLibraryUpsertReadingQuestionRpc,
+  WsLibraryDeleteReadingQuestionRpc,
+  WsLibraryUpsertReadingInsightRpc,
+  WsLibrarySetReadingPreferenceRpc,
+  WsLibraryListReadingModelsRpc,
+  WsLibraryRunReadingAiActionRpc,
+  WsLibraryImportGuideRpc,
+  WsLibrarySyncWkbAnnotationsRpc,
+  WsLibrarySubmitToWkbRpc,
+  WsLibraryImaStatusRpc,
+  WsLibraryUpdateImaConfigRpc,
+  WsLibraryImaSearchRpc,
   WsWagentStatusRpc,
   WsWagentSendRpc,
   WsWagentAbortRpc,

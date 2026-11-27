@@ -202,3 +202,131 @@ export interface LibraryBlobGcReport {
   readonly deferredLockedBlobs: number;
   readonly missingBlobSha256s: ReadonlyArray<string>;
 }
+
+export interface LibraryReadingParagraph {
+  readonly entryId: string;
+  readonly physicalPage: number;
+  readonly anchor: string;
+  readonly blobSha256: string | null;
+  readonly anchorAlgoVersion: number;
+  readonly quote: string;
+  readonly note: string;
+  readonly marked: boolean;
+  readonly highlighted: boolean;
+  readonly highlightColor: string;
+  readonly wkbKind: string;
+  readonly hidden: boolean;
+  readonly mergedInto: string | null;
+  readonly analysisJson: string | null;
+  readonly updatedAt: string;
+}
+
+export interface UpsertReadingParagraphInput {
+  readonly entryId: string;
+  readonly physicalPage: number;
+  readonly anchor: string;
+  readonly blobSha256?: string | null | undefined;
+  readonly anchorAlgoVersion?: number | undefined;
+  readonly quote: string;
+  readonly note?: string | undefined;
+  readonly marked?: boolean | undefined;
+  readonly highlighted?: boolean | undefined;
+  readonly highlightColor?: string | undefined;
+  readonly wkbKind?: string | undefined;
+  readonly hidden?: boolean | undefined;
+  readonly mergedInto?: string | null | undefined;
+  readonly analysisJson?: string | null | undefined;
+}
+
+export interface LibraryReadingQuestion {
+  readonly id: string;
+  readonly entryId: string;
+  readonly physicalPage: number;
+  readonly anchor: string | null;
+  readonly question: string;
+  readonly selfAnswer: string;
+  readonly answer: string;
+  readonly sourcesJson: string;
+  readonly modelId: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+export interface UpsertReadingQuestionInput {
+  readonly id?: string | undefined;
+  readonly entryId: string;
+  readonly physicalPage: number;
+  readonly anchor?: string | null | undefined;
+  readonly question: string;
+  readonly selfAnswer?: string | undefined;
+  readonly answer?: string | undefined;
+  readonly sourcesJson?: string | undefined;
+  readonly modelId?: string | undefined;
+}
+
+export interface LibraryReadingInsight {
+  readonly entryId: string;
+  readonly kind: string;
+  readonly payloadJson: string;
+  readonly modelId: string;
+  readonly updatedAt: string;
+}
+
+export interface LibraryReadingState {
+  readonly entryId: string;
+  readonly physicalPage: number;
+  readonly paragraphs: ReadonlyArray<LibraryReadingParagraph>;
+  readonly questions: ReadonlyArray<LibraryReadingQuestion>;
+  readonly insights: ReadonlyArray<LibraryReadingInsight>;
+  readonly preferences: Readonly<Record<string, string>>;
+  readonly pages: ReadonlyArray<LibraryEntryPage>;
+}
+
+export interface LibraryMcpReadingNotesInput {
+  readonly id: string;
+  readonly cursor?: number | undefined;
+  readonly maxChars?: number | undefined;
+  readonly includeCards?: boolean | undefined;
+}
+
+export interface LibraryMcpReadingNoteItem {
+  readonly physicalPage: number;
+  readonly anchor: string;
+  readonly quote: string;
+  readonly note: string;
+  readonly marked: boolean;
+  readonly highlighted: boolean;
+  readonly wkbKind: string;
+  readonly cardSummary: string | null;
+}
+
+export interface LibraryMcpReadingNotesResult {
+  readonly entryId: string;
+  readonly title: string;
+  readonly entryNote: string;
+  readonly items: ReadonlyArray<LibraryMcpReadingNoteItem>;
+  readonly nextCursor: number | null;
+  readonly totalItems: number;
+  readonly truncated: boolean;
+  readonly untrustedContentNotice: string;
+}
+
+export interface AppendLibraryNoteIdempotentInput {
+  readonly entryId: string;
+  readonly text: string;
+  readonly idempotencyKey: string;
+  readonly expectedRevision?: number | undefined;
+}
+
+export interface AppendLibraryNoteIdempotentResult {
+  readonly entry: LibraryEntry;
+  readonly deduplicated: boolean;
+}
+
+export interface ImaSearchHit {
+  readonly id: string;
+  readonly title: string;
+  readonly snippet: string;
+  readonly url: string | null;
+  readonly score: number | null;
+}

@@ -7,11 +7,16 @@ import * as NodePath from "node:path";
 import { WkbBridgeError } from "./errors.ts";
 import type {
   DetectWkbOptions,
+  RunWkbAnnotateInput,
+  RunWkbAnnotateOptions,
   RunWkbExportInput,
   RunWkbExportOptions,
+  RunWkbSubmitInput,
+  WkbAnnotateResult,
   WkbExportResult,
   WkbInferredKind,
   WkbInstallationStatus,
+  WkbSubmitResult,
 } from "./types.ts";
 
 export const WKB_DEFAULT_EXPORT_TIMEOUT_MS = 180_000;
@@ -419,4 +424,275 @@ export async function runWkbExport(
     inferredKind: inferWkbEntryKind(normalizedSource, pdfPath !== null),
     sourceUrl,
   };
+}
+
+async function callRemoteWkbMcpTool(input: {
+  readonly remoteUrl: string;
+  readonly remoteToken: string;
+  readonly toolName: string;
+  readonly args: Record<string, unknown>;
+  readonly fetchImpl?: typeof fetch | undefined;
+  readonly signal?: AbortSignal | undefined;
+}): Promise<string> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    authorization: `Bearer ${input.remoteToken}`,
+  };
+  const initRes = await fetchImpl(input.remoteUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "t3code-wkb-bridge", version: "1.0.0" },
+      },
+    }),
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (!initRes.ok) {
+    throw new WkbBridgeError(
+      "process_failed",
+      `Remote wkb MCP initialize failed with HTTP ${initRes.status}.`,
+    );
+  }
+  const sessionId = initRes.headers.get("mcp-session-id");
+  const callRes = await fetchImpl(input.remoteUrl, {
+    method: "POST",
+    headers: {
+      ...headers,
+      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      "mcp-protocol-version": "2025-06-18",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: input.toolName, arguments: input.args },
+    }),
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+  if (!callRes.ok) {
+    throw new WkbBridgeError(
+      "process_failed",
+      `Remote wkb MCP ${input.toolName} failed with HTTP ${callRes.status}.`,
+    );
+  }
+  const bodyText = await callRes.text();
+  const payloadLine = bodyText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("data:") || line.startsWith("{"))
+    .map((line) => line.replace(/^data:\s*/u, ""))
+    .find((line) => line.includes('"id":2') || line.includes('"id": 2'));
+  if (!payloadLine) {
+    return bodyText.trim() || "Synced to remote wkb.";
+  }
+  const parsed = JSON.parse(payloadLine) as {
+    result?: { content?: ReadonlyArray<{ text?: string }>; isError?: boolean };
+    error?: { message?: string };
+  };
+  if (parsed.error?.message) {
+    throw new WkbBridgeError("process_failed", parsed.error.message);
+  }
+  const text = parsed.result?.content?.[0]?.text ?? "Synced to remote wkb.";
+  if (parsed.result?.isError) {
+    throw new WkbBridgeError("process_failed", text);
+  }
+  return text;
+}
+
+async function runLocalWkbStdinCommand(input: {
+  readonly kbDir: string;
+  readonly uvBinary?: string | undefined;
+  readonly env?: Readonly<Record<string, string | undefined>> | undefined;
+  readonly args: ReadonlyArray<string>;
+  readonly stdinText: string;
+  readonly timeoutMs?: number | undefined;
+  readonly signal?: AbortSignal | undefined;
+}): Promise<string> {
+  const uv = findExecutableOnPath(
+    input.uvBinary ?? input.env?.T3CODE_WKB_UV_BIN ?? "uv",
+    input.env ?? {},
+  );
+  if (!uv || !isWkbDirectory(input.kbDir)) {
+    throw new WkbBridgeError(
+      "unavailable",
+      "Local wkb CLI or uv binary is not available for local execution.",
+    );
+  }
+  const timeoutMs = input.timeoutMs ?? WKB_DEFAULT_EXPORT_TIMEOUT_MS;
+  return new Promise<string>((resolve, reject) => {
+    const child = NodeChildProcess.spawn(
+      uv,
+      ["run", "--directory", input.kbDir, "wkb", ...input.args],
+      {
+        env: input.env as NodeJS.ProcessEnv | undefined,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let settled = false;
+    const finish = (cb: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      input.signal?.removeEventListener("abort", onAbort);
+      cb();
+    };
+    const onAbort = () => {
+      child.kill("SIGTERM");
+      finish(() => reject(new WkbBridgeError("aborted", "wkb command was aborted.")));
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish(() =>
+        reject(new WkbBridgeError("timeout", `wkb command timed out after ${timeoutMs}ms.`)),
+      );
+    }, timeoutMs);
+    timer.unref?.();
+    if (input.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    input.signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("error", (err) =>
+      finish(() => reject(new WkbBridgeError("process_failed", err.message))),
+    );
+    child.on("close", (code) => {
+      const out = Buffer.concat(stdoutChunks).toString("utf8").trim();
+      const err = Buffer.concat(stderrChunks).toString("utf8").trim();
+      if (code !== 0) {
+        finish(() =>
+          reject(
+            new WkbBridgeError(
+              "process_failed",
+              err.slice(-400) || `wkb exited with code ${code ?? -1}.`,
+            ),
+          ),
+        );
+        return;
+      }
+      finish(() => resolve(out || "Completed."));
+    });
+    child.stdin.end(input.stdinText, "utf8");
+  });
+}
+
+/**
+ * Syncs DeepRead highlights & annotations (6 wkb kinds) into `wkb brain` via remote MCP
+ * (`brain_annotate`) when remoteUrl+remoteToken are set, else via local `wkb annotate -`.
+ */
+export async function runWkbAnnotate(
+  input: RunWkbAnnotateInput,
+  options: RunWkbAnnotateOptions,
+): Promise<WkbAnnotateResult> {
+  const sourceId = input.sourceId.trim();
+  if (!sourceId) {
+    throw new WkbBridgeError("invalid_source", "wkb sourceId must not be empty.");
+  }
+  const payload = {
+    source_id: sourceId,
+    annotations: input.annotations.map((ann) => ({
+      id: ann.id,
+      kind: ann.kind,
+      ...(ann.color ? { color: ann.color } : {}),
+      text: ann.text,
+      ...(ann.note ? { note: ann.note } : {}),
+      location: ann.location,
+      ...(ann.created ? { created: ann.created } : {}),
+      ...(ann.updated ? { updated: ann.updated } : {}),
+      ...(ann.deleted ? { deleted: true } : {}),
+    })),
+  };
+
+  if (options.remoteUrl && options.remoteToken) {
+    const summary = await callRemoteWkbMcpTool({
+      remoteUrl: options.remoteUrl,
+      remoteToken: options.remoteToken,
+      toolName: "brain_annotate",
+      args: { payload },
+      fetchImpl: options.fetchImpl,
+      signal: options.signal,
+    });
+    return { mode: "remote", summary, syncedCount: input.annotations.length };
+  }
+
+  if (options.kbDir) {
+    const summary = await runLocalWkbStdinCommand({
+      kbDir: options.kbDir,
+      uvBinary: options.uvBinary,
+      env: options.env,
+      args: ["annotate", "-"],
+      stdinText: JSON.stringify(payload),
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
+    return { mode: "local", summary, syncedCount: input.annotations.length };
+  }
+
+  throw new WkbBridgeError(
+    "unavailable",
+    "Neither remote wkb MCP (URL + token) nor local wkb directory is configured.",
+  );
+}
+
+/**
+ * Submits a Research Library document & curated notes into `wkb brain` for permanent crystallization.
+ */
+export async function runWkbSubmit(
+  input: RunWkbSubmitInput,
+  options: RunWkbAnnotateOptions,
+): Promise<WkbSubmitResult> {
+  const title = input.title.trim();
+  const body = input.text.trim();
+  if (!title || !body) {
+    throw new WkbBridgeError("invalid_source", "Title and body text are required for wkb submit.");
+  }
+  const markdownDoc = `# ${title}\n${input.url ? `\nSource: ${input.url}\n` : ""}\n${body}\n`;
+
+  if (options.remoteUrl && options.remoteToken) {
+    const summary = await callRemoteWkbMcpTool({
+      remoteUrl: options.remoteUrl,
+      remoteToken: options.remoteToken,
+      toolName: "brain_ingest",
+      args: {
+        ...(input.url ? { source: input.url } : { text: markdownDoc }),
+        ...(input.note ? { note: input.note } : {}),
+      },
+      fetchImpl: options.fetchImpl,
+      signal: options.signal,
+    });
+    return { mode: "remote", summary };
+  }
+
+  if (options.kbDir) {
+    const args = ["ingest", "-"];
+    if (input.note?.trim()) {
+      args.push("--note", input.note.trim());
+    }
+    const summary = await runLocalWkbStdinCommand({
+      kbDir: options.kbDir,
+      uvBinary: options.uvBinary,
+      env: options.env,
+      args,
+      stdinText: markdownDoc,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+    });
+    return { mode: "local", summary };
+  }
+
+  throw new WkbBridgeError(
+    "unavailable",
+    "Neither remote wkb MCP (URL + token) nor local wkb directory is configured.",
+  );
 }

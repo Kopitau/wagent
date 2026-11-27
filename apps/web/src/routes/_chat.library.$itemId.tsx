@@ -13,6 +13,7 @@ import { useState } from "react";
 
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "~/components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "~/components/WorkspacePageHeader";
+import { DeepReadWorkbench } from "~/components/library/DeepReadWorkbench";
 import { LibraryPdfPreview } from "~/components/library/LibraryPdfPreview";
 import { resolveActiveLibraryEnvironmentId } from "~/components/library/libraryFormatting.logic";
 import { Alert, AlertDescription } from "~/components/ui/alert";
@@ -43,7 +44,7 @@ function LibraryItemRouteView() {
   const { itemId } = Route.useParams();
   const { env } = Route.useSearch();
   const { environments } = useEnvironments();
-  const [viewMode, setViewMode] = useState<"pdf" | "text">("pdf");
+  const [viewMode, setViewMode] = useState<"deepread" | "rawPdf" | "text">("deepread");
 
   const activeEnvironmentId = resolveActiveLibraryEnvironmentId(
     environments.map((item) => ({
@@ -90,26 +91,34 @@ function LibraryItemRouteView() {
           </WorkspaceBreadcrumbItem>
         </WorkspaceBreadcrumb>
         <div className="min-w-0 flex-1" />
-        {hasPdf ? (
-          <div className="flex items-center gap-1.5 [-webkit-app-region:no-drag]">
+        <div className="flex items-center gap-1.5 [-webkit-app-region:no-drag]">
+          <Button
+            size="sm"
+            variant={viewMode === "deepread" ? "secondary" : "ghost"}
+            onClick={() => setViewMode("deepread")}
+          >
+            <BookOpenIcon />
+            <T>DeepRead</T>
+          </Button>
+          {hasPdf ? (
             <Button
               size="sm"
-              variant={viewMode === "pdf" ? "secondary" : "ghost"}
-              onClick={() => setViewMode("pdf")}
+              variant={viewMode === "rawPdf" ? "secondary" : "ghost"}
+              onClick={() => setViewMode("rawPdf")}
             >
               <BookOpenIcon />
-              <T>PDF</T>
+              <T>Raw PDF</T>
             </Button>
-            <Button
-              size="sm"
-              variant={viewMode === "text" ? "secondary" : "ghost"}
-              onClick={() => setViewMode("text")}
-            >
-              <FileTextIcon />
-              <T>Text & notes</T>
-            </Button>
-          </div>
-        ) : null}
+          ) : null}
+          <Button
+            size="sm"
+            variant={viewMode === "text" ? "secondary" : "ghost"}
+            onClick={() => setViewMode("text")}
+          >
+            <FileTextIcon />
+            <T>Text & notes</T>
+          </Button>
+        </div>
       </WorkspacePageHeader>
 
       <Separator />
@@ -161,7 +170,9 @@ function LibraryItemRouteView() {
           </Alert>
         </div>
       ) : entry !== null && activeEnvironmentId !== null ? (
-        hasPdf && viewMode === "pdf" ? (
+        viewMode === "deepread" ? (
+          <DeepReadWorkbench environmentId={activeEnvironmentId} entry={entry} />
+        ) : hasPdf && viewMode === "rawPdf" ? (
           <LibraryPdfPreview environmentId={activeEnvironmentId} entry={entry} />
         ) : (
           <ScrollArea className="min-h-0 flex-1">

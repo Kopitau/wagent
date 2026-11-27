@@ -1,8 +1,29 @@
+import { OrchestratorMcpFailure, type LibraryRpcError } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
 import * as LibraryService from "../../../library/LibraryService.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { LibraryToolkit } from "./tools.ts";
+
+function mapLibraryWriteFailure(error: LibraryRpcError): OrchestratorMcpFailure {
+  switch (error._tag) {
+    case "LibraryValidationError":
+    case "LibraryNotFoundError":
+    case "LibraryDuplicateUrlError":
+    case "LibraryEditConflictError":
+    case "LibrarySsrfRejectedError":
+    case "LibraryUploadTooLargeError":
+      return new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message: error.message,
+      });
+    default:
+      return new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: error.message,
+      });
+  }
+}
 
 export const layer = McpToolAccess.toLayer(
   LibraryToolkit,
@@ -46,6 +67,53 @@ export const layer = McpToolAccess.toLayer(
           ...(input.pageEnd === undefined ? {} : { pageEnd: input.pageEnd }),
           ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
         }),
+      ),
+      library_get_reading_notes: McpToolAccess.reads((input) =>
+        library.getReadingNotesForMcp({
+          id: input.id,
+          ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+          ...(input.maxChars === undefined ? {} : { maxChars: input.maxChars }),
+          ...(input.includeCards === undefined ? {} : { includeCards: input.includeCards }),
+        }),
+      ),
+      library_append_note: McpToolAccess.writes((input) =>
+        library
+          .appendNoteIdempotent({
+            entryId: input.id,
+            text: input.text,
+            idempotencyKey: input.idempotencyKey,
+            ...(input.expectedRevision === undefined
+              ? {}
+              : { expectedRevision: input.expectedRevision }),
+          })
+          .pipe(
+            Effect.map((result) => ({
+              entryId: result.entry.id,
+              revision: result.entry.revision,
+              deduplicated: result.deduplicated,
+            })),
+            Effect.mapError(mapLibraryWriteFailure),
+          ),
+      ),
+      library_save_url: McpToolAccess.writes((input) =>
+        library
+          .fetchUrl({
+            url: input.url,
+            ...(input.title === undefined ? {} : { title: input.title }),
+            ...(input.note === undefined ? {} : { note: input.note }),
+            ...(input.tags === undefined ? {} : { tags: input.tags }),
+          })
+          .pipe(
+            Effect.map((result) => ({
+              entryId: result.entry.id,
+              kind: result.entry.kind,
+              title: result.entry.title,
+              url: result.entry.url,
+              fetched: result.fetched,
+              fallbackReason: result.fallbackReason,
+            })),
+            Effect.mapError(mapLibraryWriteFailure),
+          ),
       ),
     };
   }),

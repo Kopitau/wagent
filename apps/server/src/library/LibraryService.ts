@@ -1,7 +1,11 @@
 import {
+  isSecretReference,
+  LibraryAiError,
   type LibraryComposeDraftInput,
   type LibraryComposeDraftResult,
   type LibraryDeleteInput,
+  type LibraryDeleteReadingQuestionInput,
+  type LibraryDeleteReadingQuestionResult,
   type LibraryDeleteResult,
   LibraryDuplicateUrlError,
   LibraryEditConflictError,
@@ -9,22 +13,47 @@ import {
   type LibraryFetchUrlInput,
   type LibraryFetchUrlResult,
   type LibraryGetInput,
+  type LibraryGetReadingStateInput,
   type LibraryGetResult,
+  type LibraryImaConfigView,
+  LibraryImaError,
+  type LibraryImaSearchInput,
+  type LibraryImaSearchResult,
   type LibraryImportFromWkbInput,
   type LibraryImportFromWkbResult,
+  type LibraryImportGuideInput,
   type LibraryImportTextFileInput,
   type LibraryListInput,
+  type LibraryListReadingModelsResult,
   type LibraryListResult,
   LibraryNotFoundError,
+  type LibraryReadingInsightContract,
+  type LibraryReadingParagraphContract,
+  type LibraryReadingQuestionContract,
+  type LibraryReadingStateResult,
   type LibraryRpcError,
+  type LibraryRunReadingAiActionInput,
+  type LibraryRunReadingAiActionResult,
   type LibrarySaveInput,
+  type LibrarySetReadingPositionInput,
+  type LibrarySetReadingPositionResult,
+  type LibrarySetReadingPreferenceInput,
   LibrarySsrfRejectedError,
   LibraryStorageError,
+  type LibrarySubmitToWkbInput,
+  type LibrarySubmitToWkbResult,
+  type LibrarySyncWkbAnnotationsInput,
+  type LibrarySyncWkbAnnotationsResult,
+  type LibraryUpdateImaConfigInput,
   type LibraryUpdateInput,
   LibraryUploadTooLargeError,
+  type LibraryUpsertReadingInsightInput,
+  type LibraryUpsertReadingParagraphInput,
+  type LibraryUpsertReadingQuestionInput,
   LibraryValidationError,
   LibraryWkbError,
   type LibraryWkbStatusResult,
+  SecretReference,
 } from "@t3tools/contracts";
 import {
   LIBRARY_DEFAULT_BLOB_GC_GRACE_MS,
@@ -39,10 +68,19 @@ import {
   LibraryUploadTooLargeError as DomainUploadTooLargeError,
   LibraryValidationError as DomainValidationError,
   normalizeLibraryUrl,
+  type AppendLibraryNoteIdempotentInput,
+  type AppendLibraryNoteIdempotentResult,
   type LibraryBlobGcReport,
   type LibraryMcpReadItemInput,
   type LibraryMcpReadItemResult,
+  type LibraryMcpReadingNotesInput,
+  type LibraryMcpReadingNotesResult,
 } from "@t3tools/research-library";
+import {
+  parseDeepReadGuideImport,
+  WKB_ANNOTATION_KINDS,
+  type WkbAnnotationKind,
+} from "@t3tools/research-library/reader";
 import {
   blobExistsOnDisk,
   cleanupStagedBlob,
@@ -52,24 +90,30 @@ import {
   publishStagedPdfBlob,
   recoverAndSweepBlobs,
   resolveBlobPath,
+  searchImaKnowledgeBase,
   stagePdfBlobFromFile,
   stagePdfBlobFromStream,
   type StagedPdfBlob,
 } from "@t3tools/research-library/server";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { requireSettingsSecret } from "../secrets/settingsSecretValue.ts";
 import * as WkbBridgeService from "../wkb/WkbBridgeService.ts";
 import { extractPdfInIsolatedProcess } from "./LibraryPdfExtractor.ts";
+import * as ReadingAiRunner from "./ReadingAiRunner.ts";
 
 class WebFetchAttemptError extends Schema.TaggedError<WebFetchAttemptError>()(
   "WebFetchAttemptError",
@@ -180,6 +224,56 @@ export class LibraryService extends Context.Service<
     readonly readItemForMcp: (
       input: LibraryMcpReadItemInput,
     ) => Effect.Effect<LibraryMcpReadItemResult, LibraryRpcError>;
+    readonly getReadingNotesForMcp: (
+      input: LibraryMcpReadingNotesInput,
+    ) => Effect.Effect<LibraryMcpReadingNotesResult, LibraryRpcError>;
+    readonly appendNoteIdempotent: (
+      input: AppendLibraryNoteIdempotentInput,
+    ) => Effect.Effect<AppendLibraryNoteIdempotentResult, LibraryRpcError>;
+    readonly getReadingState: (
+      input: LibraryGetReadingStateInput,
+    ) => Effect.Effect<LibraryReadingStateResult, LibraryRpcError>;
+    readonly setReadingPosition: (
+      input: LibrarySetReadingPositionInput,
+    ) => Effect.Effect<LibrarySetReadingPositionResult, LibraryRpcError>;
+    readonly upsertReadingParagraph: (
+      input: LibraryUpsertReadingParagraphInput,
+    ) => Effect.Effect<LibraryReadingParagraphContract, LibraryRpcError>;
+    readonly upsertReadingQuestion: (
+      input: LibraryUpsertReadingQuestionInput,
+    ) => Effect.Effect<LibraryReadingQuestionContract, LibraryRpcError>;
+    readonly deleteReadingQuestion: (
+      input: LibraryDeleteReadingQuestionInput,
+    ) => Effect.Effect<LibraryDeleteReadingQuestionResult, LibraryRpcError>;
+    readonly upsertReadingInsight: (
+      input: LibraryUpsertReadingInsightInput,
+    ) => Effect.Effect<LibraryReadingInsightContract, LibraryRpcError>;
+    readonly setReadingPreference: (
+      input: LibrarySetReadingPreferenceInput,
+    ) => Effect.Effect<void, LibraryRpcError>;
+    readonly listReadingModels: () => Effect.Effect<
+      LibraryListReadingModelsResult,
+      LibraryRpcError
+    >;
+    readonly runReadingAiAction: (
+      input: LibraryRunReadingAiActionInput,
+    ) => Effect.Effect<LibraryRunReadingAiActionResult, LibraryRpcError>;
+    readonly importGuide: (
+      input: LibraryImportGuideInput,
+    ) => Effect.Effect<LibraryReadingInsightContract, LibraryRpcError>;
+    readonly syncWkbAnnotations: (
+      input: LibrarySyncWkbAnnotationsInput,
+    ) => Effect.Effect<LibrarySyncWkbAnnotationsResult, LibraryRpcError>;
+    readonly submitToWkb: (
+      input: LibrarySubmitToWkbInput,
+    ) => Effect.Effect<LibrarySubmitToWkbResult, LibraryRpcError>;
+    readonly imaStatus: () => Effect.Effect<LibraryImaConfigView, LibraryRpcError>;
+    readonly updateImaConfig: (
+      input: LibraryUpdateImaConfigInput,
+    ) => Effect.Effect<LibraryImaConfigView, LibraryRpcError>;
+    readonly imaSearch: (
+      input: LibraryImaSearchInput,
+    ) => Effect.Effect<LibraryImaSearchResult, LibraryRpcError>;
     readonly runBlobGc: (options?: {
       readonly orphanGraceMs?: number | undefined;
       readonly tempGraceMs?: number | undefined;
@@ -188,10 +282,32 @@ export class LibraryService extends Context.Service<
   }
 >()("t3/library/LibraryService") {}
 
+const IMA_SECRET_KEY = "library-ima-api-key";
+const VALID_WKB_KINDS: ReadonlySet<string> = new Set(WKB_ANNOTATION_KINDS);
+const imaEncoder = new TextEncoder();
+const imaDecoder = new TextDecoder();
+
+const StoredImaConfigSchema = Schema.Struct({
+  enabled: Schema.Boolean,
+  baseUrl: Schema.String,
+  knowledgeBaseId: Schema.String,
+  apiKeyRef: Schema.optional(SecretReference),
+});
+type StoredImaConfig = typeof StoredImaConfigSchema.Type;
+const StoredImaConfigJson = Schema.fromJsonString(StoredImaConfigSchema);
+const UnknownJsonString = Schema.fromJsonString(Schema.Unknown);
+const encodeUnknownJson = Schema.encodeEffect(UnknownJsonString);
+const decodeStoredImaConfig = Schema.decodeEffect(StoredImaConfigJson);
+const encodeStoredImaConfig = Schema.encodeEffect(StoredImaConfigJson);
+
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const wkbService = yield* Effect.serviceOption(WkbBridgeService.WkbBridgeService);
+  const readingAiOpt = yield* Effect.serviceOption(ReadingAiRunner.ReadingAiRunner);
+  const secretStoreOpt = yield* Effect.serviceOption(ServerSecretStore.ServerSecretStore);
+  const secretResolverOpt = yield* Effect.serviceOption(SecretResolver.SecretResolver);
+  const fsOpt = yield* Effect.serviceOption(FileSystem.FileSystem);
   const path = yield* Path.Path;
   const clock = yield* Clock.Clock;
   const platform = yield* HostProcess.Platform;
@@ -199,6 +315,7 @@ const make = Effect.gen(function* () {
   const libraryDir = path.join(config.stateDir, "research-library");
   const dbPath = path.join(libraryDir, "library.sqlite");
   const blobsDir = path.join(libraryDir, "blobs");
+  const imaConfigPath = path.join(libraryDir, "ima.json");
 
   const database = yield* Effect.acquireRelease(
     Effect.try({
@@ -665,6 +782,473 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const getReadingNotesForMcp: LibraryService["Service"]["getReadingNotesForMcp"] = Effect.fn(
+    "LibraryService.getReadingNotesForMcp",
+  )(function* (input) {
+    return yield* run("getReadingNotesForMcp", () => database.getReadingNotesForMcp(input));
+  });
+
+  const appendNoteIdempotent: LibraryService["Service"]["appendNoteIdempotent"] = Effect.fn(
+    "LibraryService.appendNoteIdempotent",
+  )(function* (input) {
+    return yield* run("appendNoteIdempotent", () => {
+      const res = database.appendNoteIdempotent(input);
+      return {
+        entry: enrichEntry(res.entry),
+        deduplicated: res.deduplicated,
+      };
+    });
+  });
+
+  const getReadingState: LibraryService["Service"]["getReadingState"] = Effect.fn(
+    "LibraryService.getReadingState",
+  )(function* (input) {
+    return yield* run("getReadingState", () => {
+      const state = database.getReadingState(input.entryId);
+      return {
+        entryId: state.entryId,
+        physicalPage: state.physicalPage,
+        paragraphs: [...state.paragraphs],
+        questions: [...state.questions],
+        insights: [...state.insights],
+        preferences: { ...state.preferences },
+        pages: [...state.pages],
+      };
+    });
+  });
+
+  const setReadingPosition: LibraryService["Service"]["setReadingPosition"] = Effect.fn(
+    "LibraryService.setReadingPosition",
+  )(function* (input) {
+    return yield* run("setReadingPosition", () => ({
+      physicalPage: database.setReadingPosition(input.entryId, input.physicalPage),
+    }));
+  });
+
+  const upsertReadingParagraph: LibraryService["Service"]["upsertReadingParagraph"] = Effect.fn(
+    "LibraryService.upsertReadingParagraph",
+  )(function* (input) {
+    return yield* run("upsertReadingParagraph", () => database.upsertReadingParagraph(input));
+  });
+
+  const upsertReadingQuestion: LibraryService["Service"]["upsertReadingQuestion"] = Effect.fn(
+    "LibraryService.upsertReadingQuestion",
+  )(function* (input) {
+    return yield* run("upsertReadingQuestion", () => database.upsertReadingQuestion(input));
+  });
+
+  const deleteReadingQuestion: LibraryService["Service"]["deleteReadingQuestion"] = Effect.fn(
+    "LibraryService.deleteReadingQuestion",
+  )(function* (input) {
+    return yield* run("deleteReadingQuestion", () => ({
+      deleted: database.deleteReadingQuestion(input.entryId, input.questionId),
+    }));
+  });
+
+  const upsertReadingInsight: LibraryService["Service"]["upsertReadingInsight"] = Effect.fn(
+    "LibraryService.upsertReadingInsight",
+  )(function* (input) {
+    return yield* run("upsertReadingInsight", () => database.upsertReadingInsight(input));
+  });
+
+  const setReadingPreference: LibraryService["Service"]["setReadingPreference"] = Effect.fn(
+    "LibraryService.setReadingPreference",
+  )(function* (input) {
+    yield* run("setReadingPreference", () => {
+      database.setReadingPreference(input.scopeKey, input.valueJson);
+    });
+  });
+
+  const listReadingModels: LibraryService["Service"]["listReadingModels"] = Effect.fn(
+    "LibraryService.listReadingModels",
+  )(function* () {
+    if (Option.isNone(readingAiOpt)) {
+      return { models: [] };
+    }
+    const models = yield* readingAiOpt.value.listModels;
+    return { models: [...models] };
+  });
+
+  const runReadingAiAction: LibraryService["Service"]["runReadingAiAction"] = Effect.fn(
+    "LibraryService.runReadingAiAction",
+  )(function* (input) {
+    if (Option.isNone(readingAiOpt)) {
+      return yield* new LibraryAiError({
+        reason: "Reading AI runner is not available on this server.",
+      });
+    }
+    const { entry, pages } = yield* run("loadForAiAction", () => {
+      const found = database.getEntry(input.entryId);
+      if (!found) throw new DomainNotFoundError(input.entryId);
+      return {
+        entry: enrichEntry(found),
+        pages: [...database.getEntryPages(input.entryId)],
+      };
+    });
+
+    // Execute AI action BEFORE touching SQLite so cancellation or failure never persists dirty state.
+    const executed = yield* readingAiOpt.value.executeAction({
+      entry,
+      pages,
+      action: input.action,
+      physicalPage: input.physicalPage,
+      quote: input.quote,
+      figureLabel: input.figureLabel,
+      question: input.question,
+      instanceId: input.instanceId,
+      model: input.model,
+    });
+
+    const payloadJson = yield* encodeUnknownJson(executed.payload).pipe(
+      Effect.orElseSucceed(() => "{}"),
+    );
+
+    if (input.action === "analyze_paragraph" && input.anchor && input.physicalPage !== undefined) {
+      const paragraph = yield* run("persistParagraphAnalysis", () =>
+        database.upsertReadingParagraph({
+          entryId: entry.id,
+          physicalPage: input.physicalPage!,
+          anchor: input.anchor!,
+          quote: input.quote ?? "",
+          analysisJson: payloadJson,
+        }),
+      );
+      return {
+        action: input.action,
+        route: executed.route,
+        modelId: executed.modelId,
+        payloadJson,
+        paragraph,
+      };
+    }
+
+    if (input.action === "ask_question" && input.question) {
+      const parsed = executed.payload as { answer?: string; sources?: unknown };
+      const question = yield* run("persistQuestionAnswer", () =>
+        database.upsertReadingQuestion({
+          id: input.questionId,
+          entryId: entry.id,
+          physicalPage: input.physicalPage ?? 1,
+          anchor: input.anchor ?? null,
+          question: input.question!,
+          answer: typeof parsed.answer === "string" ? parsed.answer : payloadJson,
+          sourcesJson: JSON.stringify(Array.isArray(parsed.sources) ? parsed.sources : []),
+          modelId: executed.modelId,
+        }),
+      );
+      return {
+        action: input.action,
+        route: executed.route,
+        modelId: executed.modelId,
+        payloadJson,
+        question,
+      };
+    }
+
+    const insightKind =
+      input.action === "figure_explain"
+        ? `figure:${(input.figureLabel ?? "fig").toLowerCase().replaceAll(/\s+/gu, "_")}`
+        : input.action;
+    const insight = yield* run("persistReadingInsight", () =>
+      database.upsertReadingInsight({
+        entryId: entry.id,
+        kind: insightKind,
+        payloadJson,
+        modelId: executed.modelId,
+      }),
+    );
+    return {
+      action: input.action,
+      route: executed.route,
+      modelId: executed.modelId,
+      payloadJson,
+      insight,
+    };
+  });
+
+  const importGuide: LibraryService["Service"]["importGuide"] = Effect.fn(
+    "LibraryService.importGuide",
+  )(function* (input) {
+    const parsed = yield* Effect.try({
+      try: () => parseDeepReadGuideImport(input.content),
+      catch: (cause) =>
+        new LibraryValidationError({
+          field: "content",
+          reason:
+            cause instanceof Error ? cause.message.slice(0, 240) : "Invalid DeepRead guide format.",
+        }),
+    });
+    return yield* run("importGuide", () =>
+      database.upsertReadingInsight({
+        entryId: input.entryId,
+        kind: "guide",
+        payloadJson: JSON.stringify(parsed),
+        modelId: "import",
+      }),
+    );
+  });
+
+  const syncWkbAnnotations: LibraryService["Service"]["syncWkbAnnotations"] = Effect.fn(
+    "LibraryService.syncWkbAnnotations",
+  )(function* (input) {
+    if (Option.isNone(wkbService)) {
+      return yield* new LibraryWkbError({
+        reason: "wkb bridge service is not enabled on this server.",
+      });
+    }
+    const state = yield* run("loadAnnotationsForWkb", () =>
+      database.getReadingState(input.entryId),
+    );
+    const annotations = state.paragraphs
+      .filter((p) => p.highlighted || p.marked || p.note.trim().length > 0 || p.wkbKind.length > 0)
+      .map((p) => {
+        const kind: WkbAnnotationKind = VALID_WKB_KINDS.has(p.wkbKind)
+          ? (p.wkbKind as WkbAnnotationKind)
+          : p.marked
+            ? "存疑"
+            : "重点";
+        return {
+          id: `${p.entryId}:${p.physicalPage}:${p.anchor}`,
+          kind,
+          ...(p.highlightColor ? { color: p.highlightColor } : {}),
+          text: p.quote,
+          ...(p.note.trim() ? { note: p.note.trim() } : {}),
+          location: { page: p.physicalPage },
+          updated: p.updatedAt,
+        };
+      });
+
+    if (annotations.length === 0) {
+      return { mode: "local", summary: "No highlights or notes to sync.", syncedCount: 0 };
+    }
+
+    const result = yield* wkbService.value
+      .annotate({
+        sourceId: input.sourceId,
+        annotations,
+      })
+      .pipe(Effect.mapError((error) => new LibraryWkbError({ reason: error.message })));
+
+    yield* run("recordWkbLink", () =>
+      database.upsertReadingInsight({
+        entryId: input.entryId,
+        kind: "wkb_link",
+        payloadJson: JSON.stringify({
+          sourceId: input.sourceId,
+          mode: result.mode,
+          syncedCount: result.syncedCount,
+        }),
+      }),
+    );
+
+    return result;
+  });
+
+  const submitToWkb: LibraryService["Service"]["submitToWkb"] = Effect.fn(
+    "LibraryService.submitToWkb",
+  )(function* (input) {
+    if (Option.isNone(wkbService)) {
+      return yield* new LibraryWkbError({
+        reason: "wkb bridge service is not enabled on this server.",
+      });
+    }
+    const { entry, state } = yield* run("loadEntryForWkbSubmit", () => {
+      const found = database.getEntry(input.entryId);
+      if (!found) throw new DomainNotFoundError(input.entryId);
+      return {
+        entry: enrichEntry(found),
+        state: database.getReadingState(input.entryId),
+      };
+    });
+    const extraNotes = state.paragraphs
+      .filter((p) => p.note.trim().length > 0 || p.marked)
+      .map((p) => `- [p.${p.physicalPage}] ${p.note || p.quote}`)
+      .join("\n");
+    const combinedNote = [input.note?.trim(), entry.note.trim(), extraNotes]
+      .filter(Boolean)
+      .join("\n\n");
+
+    return yield* wkbService.value
+      .submit({
+        title: entry.title,
+        url: entry.url,
+        text: entry.body || state.pages.map((p) => `[p.${p.physicalPage}]\n${p.text}`).join("\n\n"),
+        ...(combinedNote ? { note: combinedNote } : {}),
+      })
+      .pipe(Effect.mapError((error) => new LibraryWkbError({ reason: error.message })));
+  });
+
+  const readImaConfig = Effect.fn("LibraryService.readImaConfig")(function* () {
+    const fallback: StoredImaConfig = { enabled: false, baseUrl: "", knowledgeBaseId: "" };
+    if (Option.isNone(fsOpt)) return fallback;
+    const exists = yield* fsOpt.value.exists(imaConfigPath).pipe(Effect.orElseSucceed(() => false));
+    if (!exists) return fallback;
+    const raw = yield* fsOpt.value
+      .readFileString(imaConfigPath)
+      .pipe(Effect.orElseSucceed(() => ""));
+    if (!raw.trim()) return fallback;
+    return yield* decodeStoredImaConfig(raw).pipe(Effect.orElseSucceed(() => fallback));
+  });
+
+  const hasStoredImaSecret = Effect.fn("LibraryService.hasStoredImaSecret")(function* (
+    cfg: StoredImaConfig,
+  ) {
+    if (cfg.apiKeyRef !== undefined && isSecretReference(cfg.apiKeyRef)) return true;
+    if (Option.isNone(secretStoreOpt)) return false;
+    const stored = yield* secretStoreOpt.value
+      .get(IMA_SECRET_KEY)
+      .pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()));
+    return Option.isSome(stored) && stored.value.byteLength > 0;
+  });
+
+  const resolveImaApiKey = Effect.fn("LibraryService.resolveImaApiKey")(function* (
+    cfg: StoredImaConfig,
+  ) {
+    if (cfg.apiKeyRef !== undefined && isSecretReference(cfg.apiKeyRef)) {
+      if (Option.isNone(secretResolverOpt)) {
+        return yield* new LibraryImaError({
+          reason: "SecretResolver is unavailable to resolve ima secret reference.",
+        });
+      }
+      return yield* requireSettingsSecret(secretResolverOpt.value, cfg.apiKeyRef).pipe(
+        Effect.mapError((cause) => new LibraryImaError({ reason: cause.message.slice(0, 400) })),
+      );
+    }
+    if (Option.isNone(secretStoreOpt)) {
+      return yield* new LibraryImaError({ reason: "ServerSecretStore is unavailable." });
+    }
+    const stored = yield* secretStoreOpt.value
+      .get(IMA_SECRET_KEY)
+      .pipe(Effect.orElseSucceed(() => Option.none<Uint8Array>()));
+    if (Option.isNone(stored)) {
+      return yield* new LibraryImaError({ reason: "ima API key is not configured." });
+    }
+    const key = imaDecoder.decode(stored.value).trim();
+    if (!key) {
+      return yield* new LibraryImaError({ reason: "ima API key is empty." });
+    }
+    return key;
+  });
+
+  const imaStatus: LibraryService["Service"]["imaStatus"] = Effect.fn("LibraryService.imaStatus")(
+    function* () {
+      const cfg = yield* readImaConfig();
+      const hasApiKey = yield* hasStoredImaSecret(cfg);
+      return {
+        enabled: cfg.enabled,
+        baseUrl: cfg.baseUrl,
+        knowledgeBaseId: cfg.knowledgeBaseId,
+        hasApiKey,
+      };
+    },
+  );
+
+  const updateImaConfig: LibraryService["Service"]["updateImaConfig"] = Effect.fn(
+    "LibraryService.updateImaConfig",
+  )(function* (input) {
+    const current = yield* readImaConfig();
+    let apiKeyRef = current.apiKeyRef;
+
+    if (input.apiKey !== undefined) {
+      if (input.apiKey === null) {
+        apiKeyRef = undefined;
+        if (Option.isSome(secretStoreOpt)) {
+          yield* secretStoreOpt.value
+            .remove(IMA_SECRET_KEY)
+            .pipe(
+              Effect.mapError(
+                (cause) => new LibraryImaError({ reason: cause.message.slice(0, 400) }),
+              ),
+            );
+        }
+      } else if (isSecretReference(input.apiKey)) {
+        apiKeyRef = input.apiKey;
+        if (Option.isSome(secretStoreOpt)) {
+          yield* secretStoreOpt.value.remove(IMA_SECRET_KEY).pipe(Effect.ignore);
+        }
+      } else {
+        apiKeyRef = undefined;
+        const trimmed = input.apiKey.trim();
+        if (Option.isSome(secretStoreOpt)) {
+          if (trimmed) {
+            yield* secretStoreOpt.value
+              .set(IMA_SECRET_KEY, imaEncoder.encode(trimmed))
+              .pipe(
+                Effect.mapError(
+                  (cause) => new LibraryImaError({ reason: cause.message.slice(0, 400) }),
+                ),
+              );
+          } else {
+            yield* secretStoreOpt.value.remove(IMA_SECRET_KEY).pipe(Effect.ignore);
+          }
+        }
+      }
+    }
+
+    const next: StoredImaConfig = {
+      enabled: input.enabled ?? current.enabled,
+      baseUrl: input.baseUrl !== undefined ? input.baseUrl.trim() : current.baseUrl,
+      knowledgeBaseId:
+        input.knowledgeBaseId !== undefined
+          ? input.knowledgeBaseId.trim()
+          : current.knowledgeBaseId,
+      ...(apiKeyRef !== undefined ? { apiKeyRef } : {}),
+    };
+
+    if (Option.isSome(fsOpt)) {
+      const encoded = yield* encodeStoredImaConfig(next).pipe(
+        Effect.mapError((cause) => new LibraryImaError({ reason: cause.message.slice(0, 400) })),
+      );
+      yield* fsOpt.value.makeDirectory(libraryDir, { recursive: true }).pipe(Effect.ignore);
+      yield* fsOpt.value
+        .writeFileString(imaConfigPath, `${encoded}\n`)
+        .pipe(
+          Effect.mapError((cause) => new LibraryImaError({ reason: cause.message.slice(0, 400) })),
+        );
+    }
+
+    const hasApiKey = yield* hasStoredImaSecret(next);
+    return {
+      enabled: next.enabled,
+      baseUrl: next.baseUrl,
+      knowledgeBaseId: next.knowledgeBaseId,
+      hasApiKey,
+    };
+  });
+
+  const imaSearch: LibraryService["Service"]["imaSearch"] = Effect.fn("LibraryService.imaSearch")(
+    function* (input) {
+      const cfg = yield* readImaConfig();
+      if (!cfg.enabled || !cfg.baseUrl) {
+        return yield* new LibraryImaError({
+          reason: "ima knowledge base integration is not enabled on this environment.",
+        });
+      }
+      const apiKey = yield* resolveImaApiKey(cfg);
+      const hits = yield* Effect.tryPromise({
+        try: (signal) =>
+          searchImaKnowledgeBase({
+            baseUrl: cfg.baseUrl,
+            apiKey,
+            knowledgeBaseId: cfg.knowledgeBaseId,
+            query: input.query,
+            limit: input.limit,
+            signal,
+          }),
+        catch: (cause) => {
+          if (cause instanceof DomainSsrfRejectedError || cause instanceof DomainValidationError) {
+            return mapLibraryError("imaSearch", cause);
+          }
+          return new LibraryImaError({
+            reason:
+              cause instanceof Error ? cause.message.slice(0, 400) : "ima search request failed.",
+          });
+        },
+      });
+      return { hits: [...hits] };
+    },
+  );
+
   const runBlobGc: LibraryService["Service"]["runBlobGc"] = Effect.fn("LibraryService.runBlobGc")(
     function* (options) {
       return yield* lock.withPermits(1)(runBlobGcLocked(options));
@@ -685,6 +1269,23 @@ const make = Effect.gen(function* () {
     wkbStatus,
     importFromWkb,
     readItemForMcp,
+    getReadingNotesForMcp,
+    appendNoteIdempotent,
+    getReadingState,
+    setReadingPosition,
+    upsertReadingParagraph,
+    upsertReadingQuestion,
+    deleteReadingQuestion,
+    upsertReadingInsight,
+    setReadingPreference,
+    listReadingModels,
+    runReadingAiAction,
+    importGuide,
+    syncWkbAnnotations,
+    submitToWkb,
+    imaStatus,
+    updateImaConfig,
+    imaSearch,
     runBlobGc,
   });
 });

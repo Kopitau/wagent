@@ -10,6 +10,10 @@
     "./server": {
       "types": "./src/server/index.ts",
       "import": "./src/server/index.ts"
+    },
+    "./reader": {
+      "types": "./src/reader/index.ts",
+      "import": "./src/reader/index.ts"
     }
   },
   "scripts": {

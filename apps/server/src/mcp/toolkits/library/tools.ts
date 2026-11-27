@@ -3,6 +3,7 @@ import {
   LibraryRpcError,
   LibrarySearchMode,
   NonNegativeInt,
+  OrchestratorMcpFailure,
   PositiveInt,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
@@ -16,8 +17,15 @@ import * as Tool from "effect/ai/Tool";
 import * as Toolkit from "effect/ai/Toolkit";
 
 import * as LibraryService from "../../../library/LibraryService.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
-const dependencies = [LibraryService.LibraryService];
+const readDependencies = [LibraryService.LibraryService];
+const writeDependencies = [
+  LibraryService.LibraryService,
+  McpInvocationContext.McpInvocationContext,
+  ThreadManagementService.ThreadManagementService,
+];
 
 const LibrarySearchSummary = Schema.Struct({
   id: Schema.String,
@@ -61,6 +69,43 @@ const LibraryReadItemResult = Schema.Struct({
   untrustedContentNotice: Schema.String,
 });
 
+const LibraryReadingNoteMcpItem = Schema.Struct({
+  physicalPage: PositiveInt,
+  anchor: Schema.String,
+  quote: Schema.String,
+  note: Schema.String,
+  marked: Schema.Boolean,
+  highlighted: Schema.Boolean,
+  wkbKind: Schema.String,
+  cardSummary: Schema.NullOr(Schema.String),
+});
+
+const LibraryGetReadingNotesResult = Schema.Struct({
+  entryId: Schema.String,
+  title: Schema.String,
+  entryNote: Schema.String,
+  items: Schema.Array(LibraryReadingNoteMcpItem),
+  nextCursor: Schema.NullOr(NonNegativeInt),
+  totalItems: NonNegativeInt,
+  truncated: Schema.Boolean,
+  untrustedContentNotice: Schema.String,
+});
+
+const LibraryAppendNoteResult = Schema.Struct({
+  entryId: Schema.String,
+  revision: PositiveInt,
+  deduplicated: Schema.Boolean,
+});
+
+const LibrarySaveUrlResult = Schema.Struct({
+  entryId: Schema.String,
+  kind: LibraryEntryKind,
+  title: Schema.String,
+  url: Schema.NullOr(Schema.String),
+  fetched: Schema.Boolean,
+  fallbackReason: Schema.NullOr(Schema.String),
+});
+
 const LibrarySearchTool = Tool.make("library_search", {
   description:
     "Search this environment's research library by text query, kind, or tag. Returns lightweight summaries and 1-based matched PDF page numbers.",
@@ -95,7 +140,7 @@ const LibrarySearchTool = Tool.make("library_search", {
   }),
   success: LibrarySearchResult,
   failure: LibraryRpcError,
-  dependencies,
+  dependencies: readDependencies,
 })
   .annotate(Tool.Title, "Search research library")
   .annotate(Tool.Readonly, true)
@@ -130,7 +175,7 @@ const LibraryReadItemTool = Tool.make("library_read_item", {
   }),
   success: LibraryReadItemResult,
   failure: LibraryRpcError,
-  dependencies,
+  dependencies: readDependencies,
 })
   .annotate(Tool.Title, "Read research library item")
   .annotate(Tool.Readonly, true)
@@ -138,4 +183,109 @@ const LibraryReadItemTool = Tool.make("library_read_item", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-export const LibraryToolkit = Toolkit.make(LibrarySearchTool, LibraryReadItemTool);
+const LibraryGetReadingNotesTool = Tool.make("library_get_reading_notes", {
+  description:
+    "Read bounded DeepRead paragraph notes, muddiest-point markers, highlights, and optional card summaries for a library entry.",
+  parameters: Schema.Struct({
+    id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+      description: "Library entry ID.",
+    }),
+    cursor: Schema.optional(
+      NonNegativeInt.annotate({
+        description: "Pagination cursor from previous call.",
+      }),
+    ),
+    maxChars: Schema.optional(
+      Schema.Int.check(
+        Schema.isBetween({ minimum: 256, maximum: LIBRARY_MCP_MAX_READ_CHARS }),
+      ).annotate({
+        description: "Maximum total characters to return (256-24000).",
+      }),
+    ),
+    includeCards: Schema.optional(
+      Schema.Boolean.annotate({
+        description: "Include AI card summaries alongside personal notes (default true).",
+      }),
+    ),
+  }),
+  success: LibraryGetReadingNotesResult,
+  failure: LibraryRpcError,
+  dependencies: readDependencies,
+})
+  .annotate(Tool.Title, "Read DeepRead paragraph notes")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const LibraryAppendNoteTool = Tool.make("library_append_note", {
+  description:
+    "Atomically and idempotently append a structured note to a research library entry. Requires a unique idempotencyKey.",
+  parameters: Schema.Struct({
+    id: TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+      description: "Library entry ID.",
+    }),
+    text: TrimmedNonEmptyString.check(Schema.isMaxLength(16_000)).annotate({
+      description: "Note text to append.",
+    }),
+    idempotencyKey: TrimmedNonEmptyString.check(Schema.isMaxLength(128)).annotate({
+      description: "Unique caller-generated key preventing duplicate appends on retries.",
+    }),
+    expectedRevision: Schema.optional(
+      PositiveInt.annotate({
+        description: "Optional optimistic-lock revision guard.",
+      }),
+    ),
+  }),
+  success: LibraryAppendNoteResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies: writeDependencies,
+})
+  .annotate(Tool.Title, "Append note to library entry")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const LibrarySaveUrlTool = Tool.make("library_save_url", {
+  description:
+    "Fetch and save a public webpage or WeChat article URL into this environment's research library with SSRF protection and URL deduplication.",
+  parameters: Schema.Struct({
+    url: TrimmedNonEmptyString.check(Schema.isMaxLength(2048)).annotate({
+      description: "Public HTTP/HTTPS article URL.",
+    }),
+    title: Schema.optional(
+      TrimmedNonEmptyString.check(Schema.isMaxLength(300)).annotate({
+        description: "Optional title override.",
+      }),
+    ),
+    note: Schema.optional(
+      Schema.String.check(Schema.isMaxLength(16_000)).annotate({
+        description: "Optional personal note.",
+      }),
+    ),
+    tags: Schema.optional(
+      Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(64)))
+        .check(Schema.isMaxLength(32))
+        .annotate({ description: "Optional tags." }),
+    ),
+  }),
+  success: LibrarySaveUrlResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return" as const,
+  dependencies: writeDependencies,
+})
+  .annotate(Tool.Title, "Save URL to research library")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, true);
+
+export const LibraryToolkit = Toolkit.make(
+  LibrarySearchTool,
+  LibraryReadItemTool,
+  LibraryGetReadingNotesTool,
+  LibraryAppendNoteTool,
+  LibrarySaveUrlTool,
+);

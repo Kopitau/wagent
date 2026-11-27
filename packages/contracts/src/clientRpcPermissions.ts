@@ -95,6 +95,18 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.libraryDelete]: AuthOrchestrationOperateScope,
   [WS_METHODS.libraryFetchUrl]: AuthOrchestrationOperateScope,
   [WS_METHODS.libraryImportFromWkb]: AuthOrchestrationOperateScope,
+  [WS_METHODS.librarySetReadingPosition]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryUpsertReadingParagraph]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryUpsertReadingQuestion]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryDeleteReadingQuestion]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryUpsertReadingInsight]: AuthOrchestrationOperateScope,
+  [WS_METHODS.librarySetReadingPreference]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryRunReadingAiAction]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryImportGuide]: AuthOrchestrationOperateScope,
+  [WS_METHODS.librarySyncWkbAnnotations]: AuthOrchestrationOperateScope,
+  [WS_METHODS.librarySubmitToWkb]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryUpdateImaConfig]: AuthSettingsWriteScope,
+  [WS_METHODS.libraryImaSearch]: AuthOrchestrationReadScope,
   [WS_METHODS.wagentSend]: AuthOrchestrationOperateScope,
   [WS_METHODS.wagentAbort]: AuthOrchestrationOperateScope,
   [WS_METHODS.wagentNewSession]: AuthOrchestrationOperateScope,
@@ -151,6 +163,10 @@ export function clientRpcRequiredScopes(
   }
   // Updating Wagent config can change model/API keys, Telegram bot token, and wkb token.
   if (method === WS_METHODS.wagentUpdateConfig) {
+    return [AuthSettingsWriteScope, AuthProvidersManageScope];
+  }
+  // Updating ima config manages server-stored secrets and external knowledge base endpoints.
+  if (method === WS_METHODS.libraryUpdateImaConfig) {
     return [AuthSettingsWriteScope, AuthProvidersManageScope];
   }
   if (method === WS_METHODS.subscribeWagentEvents) {

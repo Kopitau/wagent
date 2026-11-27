@@ -21,6 +21,8 @@ import {
   LIBRARY_PAGE_EXTRACTION_STATUSES,
   LIBRARY_SNIPPET_MAX_CHARS,
   LIBRARY_UNTRUSTED_DATA_NOTICE,
+  type AppendLibraryNoteIdempotentInput,
+  type AppendLibraryNoteIdempotentResult,
   type ComposeLibraryDraftResult,
   type DeleteLibraryEntryInput,
   type DeleteLibraryEntryResult,
@@ -31,12 +33,21 @@ import {
   type LibraryEntrySummary,
   type LibraryMcpReadItemInput,
   type LibraryMcpReadItemResult,
+  type LibraryMcpReadingNoteItem,
+  type LibraryMcpReadingNotesInput,
+  type LibraryMcpReadingNotesResult,
   type LibraryPageExtractionStatus,
+  type LibraryReadingInsight,
+  type LibraryReadingParagraph,
+  type LibraryReadingQuestion,
+  type LibraryReadingState,
   type LibrarySearchMode,
   type ListLibraryEntriesInput,
   type ListLibraryEntriesResult,
   type SaveLibraryEntryInput,
   type UpdateLibraryEntryInput,
+  type UpsertReadingParagraphInput,
+  type UpsertReadingQuestionInput,
 } from "../types.ts";
 import {
   normalizeLibraryBody,
@@ -49,7 +60,7 @@ import {
   validateTextImportFile,
 } from "../validation.ts";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_QUERY_TERMS = 8;
 const MAX_MATCHED_PAGES_PER_SUMMARY = 8;
 const VALID_PAGE_STATUSES: ReadonlySet<string> = new Set(LIBRARY_PAGE_EXTRACTION_STATUSES);
@@ -124,6 +135,24 @@ export interface LibraryDatabase {
     readonly question: string;
     readonly maxTotalChars?: number | undefined;
   }) => ComposeLibraryDraftResult;
+  readonly getReadingState: (entryId: string) => LibraryReadingState;
+  readonly setReadingPosition: (entryId: string, physicalPage: number) => number;
+  readonly upsertReadingParagraph: (input: UpsertReadingParagraphInput) => LibraryReadingParagraph;
+  readonly upsertReadingQuestion: (input: UpsertReadingQuestionInput) => LibraryReadingQuestion;
+  readonly deleteReadingQuestion: (entryId: string, questionId: string) => boolean;
+  readonly upsertReadingInsight: (input: {
+    readonly entryId: string;
+    readonly kind: string;
+    readonly payloadJson: string;
+    readonly modelId?: string | undefined;
+  }) => LibraryReadingInsight;
+  readonly setReadingPreference: (scopeKey: string, valueJson: string) => void;
+  readonly getReadingNotesForMcp: (
+    input: LibraryMcpReadingNotesInput,
+  ) => LibraryMcpReadingNotesResult;
+  readonly appendNoteIdempotent: (
+    input: AppendLibraryNoteIdempotentInput,
+  ) => AppendLibraryNoteIdempotentResult;
 }
 
 function parseTagsJson(raw: string): ReadonlyArray<string> {
@@ -373,6 +402,72 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
           CREATE INDEX IF NOT EXISTS idx_entries_blob_sha256
             ON entries(blob_sha256)
             WHERE blob_sha256 IS NOT NULL;
+
+          CREATE TABLE IF NOT EXISTS reading_positions (
+            entry_id TEXT PRIMARY KEY REFERENCES entries(id) ON DELETE CASCADE,
+            physical_page INTEGER NOT NULL CHECK (physical_page >= 1),
+            updated_at TEXT NOT NULL
+          ) STRICT;
+
+          CREATE TABLE IF NOT EXISTS reading_paragraphs (
+            entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            physical_page INTEGER NOT NULL CHECK (physical_page >= 1),
+            anchor TEXT NOT NULL,
+            blob_sha256 TEXT,
+            anchor_algo_version INTEGER NOT NULL DEFAULT 1,
+            quote TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            marked INTEGER NOT NULL DEFAULT 0,
+            highlighted INTEGER NOT NULL DEFAULT 0,
+            highlight_color TEXT NOT NULL DEFAULT '',
+            wkb_kind TEXT NOT NULL DEFAULT '',
+            hidden INTEGER NOT NULL DEFAULT 0,
+            merged_into TEXT,
+            analysis_json TEXT,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (entry_id, physical_page, anchor)
+          ) STRICT;
+
+          CREATE TABLE IF NOT EXISTS reading_questions (
+            id TEXT PRIMARY KEY,
+            entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            physical_page INTEGER NOT NULL CHECK (physical_page >= 1),
+            anchor TEXT,
+            question TEXT NOT NULL,
+            self_answer TEXT NOT NULL DEFAULT '',
+            answer TEXT NOT NULL DEFAULT '',
+            sources_json TEXT NOT NULL DEFAULT '[]',
+            model_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+
+          CREATE TABLE IF NOT EXISTS reading_insights (
+            entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            model_id TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (entry_id, kind)
+          ) STRICT;
+
+          CREATE TABLE IF NOT EXISTS reading_preferences (
+            scope_key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+          ) STRICT;
+
+          CREATE TABLE IF NOT EXISTS library_idempotency (
+            key TEXT PRIMARY KEY,
+            entry_id TEXT NOT NULL REFERENCES entries(id) ON DELETE CASCADE,
+            result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+          ) STRICT;
+
+          CREATE INDEX IF NOT EXISTS idx_reading_paragraphs_entry
+            ON reading_paragraphs(entry_id, physical_page);
+          CREATE INDEX IF NOT EXISTS idx_reading_questions_entry
+            ON reading_questions(entry_id, created_at DESC);
 
           PRAGMA user_version = ${SCHEMA_VERSION};
         `);
@@ -1025,6 +1120,560 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       };
     };
 
+    const requireEntryExists = (entryId: string): LibraryEntry => {
+      const existing = getEntry(entryId);
+      if (!existing) {
+        throw new LibraryNotFoundError(entryId);
+      }
+      return existing;
+    };
+
+    const getReadingState = (entryId: string): LibraryReadingState => {
+      requireEntryExists(entryId);
+      const posRow = db
+        .prepare("SELECT physical_page FROM reading_positions WHERE entry_id = ?")
+        .get(entryId) as { readonly physical_page: number } | undefined;
+
+      const paragraphRows = db
+        .prepare(
+          `SELECT entry_id, physical_page, anchor, blob_sha256, anchor_algo_version, quote,
+                  note, marked, highlighted, highlight_color, wkb_kind, hidden, merged_into,
+                  analysis_json, updated_at
+           FROM reading_paragraphs
+           WHERE entry_id = ?
+           ORDER BY physical_page ASC, updated_at ASC`,
+        )
+        .all(entryId) as unknown as ReadonlyArray<{
+        readonly entry_id: string;
+        readonly physical_page: number;
+        readonly anchor: string;
+        readonly blob_sha256: string | null;
+        readonly anchor_algo_version: number;
+        readonly quote: string;
+        readonly note: string;
+        readonly marked: number;
+        readonly highlighted: number;
+        readonly highlight_color: string;
+        readonly wkb_kind: string;
+        readonly hidden: number;
+        readonly merged_into: string | null;
+        readonly analysis_json: string | null;
+        readonly updated_at: string;
+      }>;
+
+      const questionRows = db
+        .prepare(
+          `SELECT id, entry_id, physical_page, anchor, question, self_answer, answer,
+                  sources_json, model_id, created_at, updated_at
+           FROM reading_questions
+           WHERE entry_id = ?
+           ORDER BY created_at DESC`,
+        )
+        .all(entryId) as unknown as ReadonlyArray<{
+        readonly id: string;
+        readonly entry_id: string;
+        readonly physical_page: number;
+        readonly anchor: string | null;
+        readonly question: string;
+        readonly self_answer: string;
+        readonly answer: string;
+        readonly sources_json: string;
+        readonly model_id: string;
+        readonly created_at: string;
+        readonly updated_at: string;
+      }>;
+
+      const insightRows = db
+        .prepare(
+          `SELECT entry_id, kind, payload_json, model_id, updated_at
+           FROM reading_insights
+           WHERE entry_id = ?`,
+        )
+        .all(entryId) as unknown as ReadonlyArray<{
+        readonly entry_id: string;
+        readonly kind: string;
+        readonly payload_json: string;
+        readonly model_id: string;
+        readonly updated_at: string;
+      }>;
+
+      const prefRows = db
+        .prepare("SELECT scope_key, value_json FROM reading_preferences")
+        .all() as unknown as ReadonlyArray<{
+        readonly scope_key: string;
+        readonly value_json: string;
+      }>;
+      const preferences: Record<string, string> = {};
+      for (const row of prefRows) {
+        preferences[row.scope_key] = row.value_json;
+      }
+
+      return {
+        entryId,
+        physicalPage: posRow?.physical_page ?? 1,
+        paragraphs: paragraphRows.map((row) => ({
+          entryId: row.entry_id,
+          physicalPage: row.physical_page,
+          anchor: row.anchor,
+          blobSha256: row.blob_sha256,
+          anchorAlgoVersion: row.anchor_algo_version,
+          quote: row.quote,
+          note: row.note,
+          marked: row.marked !== 0,
+          highlighted: row.highlighted !== 0,
+          highlightColor: row.highlight_color,
+          wkbKind: row.wkb_kind,
+          hidden: row.hidden !== 0,
+          mergedInto: row.merged_into,
+          analysisJson: row.analysis_json,
+          updatedAt: row.updated_at,
+        })),
+        questions: questionRows.map((row) => ({
+          id: row.id,
+          entryId: row.entry_id,
+          physicalPage: row.physical_page,
+          anchor: row.anchor,
+          question: row.question,
+          selfAnswer: row.self_answer,
+          answer: row.answer,
+          sourcesJson: row.sources_json,
+          modelId: row.model_id,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        })),
+        insights: insightRows.map((row) => ({
+          entryId: row.entry_id,
+          kind: row.kind,
+          payloadJson: row.payload_json,
+          modelId: row.model_id,
+          updatedAt: row.updated_at,
+        })),
+        preferences,
+        pages: getEntryPages(entryId),
+      };
+    };
+
+    const setReadingPosition = (entryId: string, physicalPage: number): number => {
+      const entry = requireEntryExists(entryId);
+      const clamped = Math.max(
+        1,
+        Math.min(entry.pageCount > 0 ? entry.pageCount : 10_000, Math.floor(physicalPage)),
+      );
+      const timestamp = now().toISOString();
+      runInImmediateTransaction(db, () => {
+        db.prepare(
+          `INSERT INTO reading_positions (entry_id, physical_page, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(entry_id) DO UPDATE SET
+             physical_page = excluded.physical_page,
+             updated_at = excluded.updated_at`,
+        ).run(entryId, clamped, timestamp);
+      });
+      return clamped;
+    };
+
+    const upsertReadingParagraph = (
+      input: UpsertReadingParagraphInput,
+    ): LibraryReadingParagraph => {
+      const entry = requireEntryExists(input.entryId);
+      if (!Number.isInteger(input.physicalPage) || input.physicalPage < 1) {
+        throw new LibraryValidationError("physicalPage", "physicalPage must be >= 1.");
+      }
+      const anchor = input.anchor.trim();
+      if (!anchor || anchor.length > 128) {
+        throw new LibraryValidationError("anchor", "anchor must be 1-128 chars.");
+      }
+      const timestamp = now().toISOString();
+
+      return runInImmediateTransaction(db, () => {
+        const existing = db
+          .prepare(
+            `SELECT blob_sha256, anchor_algo_version, quote, note, marked, highlighted,
+                    highlight_color, wkb_kind, hidden, merged_into, analysis_json
+             FROM reading_paragraphs
+             WHERE entry_id = ? AND physical_page = ? AND anchor = ?`,
+          )
+          .get(input.entryId, input.physicalPage, anchor) as
+          | {
+              readonly blob_sha256: string | null;
+              readonly anchor_algo_version: number;
+              readonly quote: string;
+              readonly note: string;
+              readonly marked: number;
+              readonly highlighted: number;
+              readonly highlight_color: string;
+              readonly wkb_kind: string;
+              readonly hidden: number;
+              readonly merged_into: string | null;
+              readonly analysis_json: string | null;
+            }
+          | undefined;
+
+        const next: LibraryReadingParagraph = {
+          entryId: input.entryId,
+          physicalPage: input.physicalPage,
+          anchor,
+          blobSha256:
+            input.blobSha256 !== undefined
+              ? input.blobSha256
+              : (existing?.blob_sha256 ?? entry.blobSha256),
+          anchorAlgoVersion: input.anchorAlgoVersion ?? existing?.anchor_algo_version ?? 1,
+          quote: input.quote.slice(0, 8_000),
+          note:
+            input.note !== undefined ? normalizeLibraryNote(input.note) : (existing?.note ?? ""),
+          marked:
+            input.marked !== undefined ? input.marked : existing ? existing.marked !== 0 : false,
+          highlighted:
+            input.highlighted !== undefined
+              ? input.highlighted
+              : existing
+                ? existing.highlighted !== 0
+                : false,
+          highlightColor:
+            input.highlightColor !== undefined
+              ? input.highlightColor.slice(0, 32)
+              : (existing?.highlight_color ?? ""),
+          wkbKind:
+            input.wkbKind !== undefined ? input.wkbKind.slice(0, 16) : (existing?.wkb_kind ?? ""),
+          hidden:
+            input.hidden !== undefined ? input.hidden : existing ? existing.hidden !== 0 : false,
+          mergedInto:
+            input.mergedInto !== undefined ? input.mergedInto : (existing?.merged_into ?? null),
+          analysisJson:
+            input.analysisJson !== undefined
+              ? input.analysisJson
+              : (existing?.analysis_json ?? null),
+          updatedAt: timestamp,
+        };
+
+        db.prepare(
+          `INSERT INTO reading_paragraphs (
+             entry_id, physical_page, anchor, blob_sha256, anchor_algo_version, quote,
+             note, marked, highlighted, highlight_color, wkb_kind, hidden, merged_into,
+             analysis_json, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(entry_id, physical_page, anchor) DO UPDATE SET
+             blob_sha256 = excluded.blob_sha256,
+             anchor_algo_version = excluded.anchor_algo_version,
+             quote = excluded.quote,
+             note = excluded.note,
+             marked = excluded.marked,
+             highlighted = excluded.highlighted,
+             highlight_color = excluded.highlight_color,
+             wkb_kind = excluded.wkb_kind,
+             hidden = excluded.hidden,
+             merged_into = excluded.merged_into,
+             analysis_json = excluded.analysis_json,
+             updated_at = excluded.updated_at`,
+        ).run(
+          next.entryId,
+          next.physicalPage,
+          next.anchor,
+          next.blobSha256,
+          next.anchorAlgoVersion,
+          next.quote,
+          next.note,
+          next.marked ? 1 : 0,
+          next.highlighted ? 1 : 0,
+          next.highlightColor,
+          next.wkbKind,
+          next.hidden ? 1 : 0,
+          next.mergedInto,
+          next.analysisJson,
+          next.updatedAt,
+        );
+        return next;
+      });
+    };
+
+    const upsertReadingQuestion = (input: UpsertReadingQuestionInput): LibraryReadingQuestion => {
+      requireEntryExists(input.entryId);
+      const question = input.question.trim();
+      if (!question || question.length > 4_000) {
+        throw new LibraryValidationError("question", "question must be 1-4000 chars.");
+      }
+      if (!Number.isInteger(input.physicalPage) || input.physicalPage < 1) {
+        throw new LibraryValidationError("physicalPage", "physicalPage must be >= 1.");
+      }
+      const id = input.id?.trim() || NodeCrypto.randomUUID();
+      const timestamp = now().toISOString();
+
+      return runInImmediateTransaction(db, () => {
+        const existing = db
+          .prepare(
+            "SELECT created_at, self_answer, answer, sources_json, model_id FROM reading_questions WHERE id = ? AND entry_id = ?",
+          )
+          .get(id, input.entryId) as
+          | {
+              readonly created_at: string;
+              readonly self_answer: string;
+              readonly answer: string;
+              readonly sources_json: string;
+              readonly model_id: string;
+            }
+          | undefined;
+
+        const next: LibraryReadingQuestion = {
+          id,
+          entryId: input.entryId,
+          physicalPage: input.physicalPage,
+          anchor: input.anchor ?? null,
+          question,
+          selfAnswer:
+            input.selfAnswer !== undefined
+              ? input.selfAnswer.slice(0, 16_000)
+              : (existing?.self_answer ?? ""),
+          answer:
+            input.answer !== undefined ? input.answer.slice(0, 48_000) : (existing?.answer ?? ""),
+          sourcesJson: input.sourcesJson ?? existing?.sources_json ?? "[]",
+          modelId: input.modelId ?? existing?.model_id ?? "",
+          createdAt: existing?.created_at ?? timestamp,
+          updatedAt: timestamp,
+        };
+
+        db.prepare(
+          `INSERT INTO reading_questions (
+             id, entry_id, physical_page, anchor, question, self_answer, answer,
+             sources_json, model_id, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             physical_page = excluded.physical_page,
+             anchor = excluded.anchor,
+             question = excluded.question,
+             self_answer = excluded.self_answer,
+             answer = excluded.answer,
+             sources_json = excluded.sources_json,
+             model_id = excluded.model_id,
+             updated_at = excluded.updated_at`,
+        ).run(
+          next.id,
+          next.entryId,
+          next.physicalPage,
+          next.anchor,
+          next.question,
+          next.selfAnswer,
+          next.answer,
+          next.sourcesJson,
+          next.modelId,
+          next.createdAt,
+          next.updatedAt,
+        );
+        return next;
+      });
+    };
+
+    const deleteReadingQuestion = (entryId: string, questionId: string): boolean => {
+      requireEntryExists(entryId);
+      const res = db
+        .prepare("DELETE FROM reading_questions WHERE id = ? AND entry_id = ?")
+        .run(questionId, entryId);
+      return Number(res.changes) > 0;
+    };
+
+    const upsertReadingInsight = (input: {
+      readonly entryId: string;
+      readonly kind: string;
+      readonly payloadJson: string;
+      readonly modelId?: string | undefined;
+    }): LibraryReadingInsight => {
+      requireEntryExists(input.entryId);
+      const kind = input.kind.trim();
+      if (!kind || kind.length > 64) {
+        throw new LibraryValidationError("kind", "insight kind must be 1-64 chars.");
+      }
+      const timestamp = now().toISOString();
+      const modelId = input.modelId ?? "";
+      runInImmediateTransaction(db, () => {
+        db.prepare(
+          `INSERT INTO reading_insights (entry_id, kind, payload_json, model_id, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(entry_id, kind) DO UPDATE SET
+             payload_json = excluded.payload_json,
+             model_id = excluded.model_id,
+             updated_at = excluded.updated_at`,
+        ).run(input.entryId, kind, input.payloadJson, modelId, timestamp);
+      });
+      return {
+        entryId: input.entryId,
+        kind,
+        payloadJson: input.payloadJson,
+        modelId,
+        updatedAt: timestamp,
+      };
+    };
+
+    const setReadingPreference = (scopeKey: string, valueJson: string): void => {
+      const key = scopeKey.trim();
+      if (!key || key.length > 128) {
+        throw new LibraryValidationError("scopeKey", "scopeKey must be 1-128 chars.");
+      }
+      const timestamp = now().toISOString();
+      runInImmediateTransaction(db, () => {
+        db.prepare(
+          `INSERT INTO reading_preferences (scope_key, value_json, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(scope_key) DO UPDATE SET
+             value_json = excluded.value_json,
+             updated_at = excluded.updated_at`,
+        ).run(key, valueJson, timestamp);
+      });
+    };
+
+    const getReadingNotesForMcp = (
+      input: LibraryMcpReadingNotesInput,
+    ): LibraryMcpReadingNotesResult => {
+      const entry = requireEntryExists(input.id);
+      const cursor = Math.max(0, Math.floor(input.cursor ?? 0));
+      const maxChars = Math.max(
+        256,
+        Math.min(
+          LIBRARY_MCP_MAX_READ_CHARS,
+          Math.floor(input.maxChars ?? LIBRARY_MCP_DEFAULT_READ_CHARS),
+        ),
+      );
+      const includeCards = input.includeCards ?? true;
+
+      const rows = db
+        .prepare(
+          `SELECT physical_page, anchor, quote, note, marked, highlighted, wkb_kind, analysis_json
+           FROM reading_paragraphs
+           WHERE entry_id = ?
+             AND (note != '' OR marked = 1 OR highlighted = 1 OR analysis_json IS NOT NULL)
+           ORDER BY physical_page ASC, updated_at ASC`,
+        )
+        .all(entry.id) as unknown as ReadonlyArray<{
+        readonly physical_page: number;
+        readonly anchor: string;
+        readonly quote: string;
+        readonly note: string;
+        readonly marked: number;
+        readonly highlighted: number;
+        readonly wkb_kind: string;
+        readonly analysis_json: string | null;
+      }>;
+
+      const items: LibraryMcpReadingNoteItem[] = [];
+      let budget = maxChars;
+      let truncated = false;
+      let entryNote = entry.note;
+      if (entryNote.length > Math.floor(budget / 3)) {
+        entryNote = entryNote.slice(0, Math.floor(budget / 3));
+        truncated = true;
+      }
+      budget -= entryNote.length;
+
+      let idx = cursor;
+      for (; idx < rows.length; idx += 1) {
+        const row = rows[idx]!;
+        let cardSummary: string | null = null;
+        if (includeCards && row.analysis_json) {
+          try {
+            const parsed = JSON.parse(row.analysis_json) as { summary?: unknown };
+            if (typeof parsed.summary === "string" && parsed.summary.trim()) {
+              cardSummary = parsed.summary.trim();
+            }
+          } catch {
+            // Ignore malformed analysis JSON.
+          }
+        }
+        const quote = row.quote.slice(0, 600);
+        const itemCost = quote.length + row.note.length + (cardSummary?.length ?? 0) + 48;
+        if (items.length > 0 && itemCost > budget) {
+          truncated = true;
+          break;
+        }
+        items.push({
+          physicalPage: row.physical_page,
+          anchor: row.anchor,
+          quote,
+          note: row.note,
+          marked: row.marked !== 0,
+          highlighted: row.highlighted !== 0,
+          wkbKind: row.wkb_kind,
+          cardSummary,
+        });
+        budget = Math.max(0, budget - itemCost);
+      }
+
+      return {
+        entryId: entry.id,
+        title: entry.title,
+        entryNote,
+        items,
+        nextCursor: idx < rows.length ? idx : null,
+        totalItems: rows.length,
+        truncated: truncated || idx < rows.length,
+        untrustedContentNotice: LIBRARY_UNTRUSTED_DATA_NOTICE,
+      };
+    };
+
+    const appendNoteIdempotent = (
+      input: AppendLibraryNoteIdempotentInput,
+    ): AppendLibraryNoteIdempotentResult => {
+      const idempotencyKey = input.idempotencyKey.trim();
+      if (!idempotencyKey || idempotencyKey.length > 128) {
+        throw new LibraryValidationError(
+          "idempotencyKey",
+          "idempotencyKey must be a non-empty string up to 128 chars.",
+        );
+      }
+      const addition = input.text.trim();
+      if (!addition) {
+        throw new LibraryValidationError("text", "Appended note text must not be empty.");
+      }
+
+      return runInImmediateTransaction(db, () => {
+        const existingReceipt = db
+          .prepare("SELECT entry_id FROM library_idempotency WHERE key = ?")
+          .get(idempotencyKey) as { readonly entry_id: string } | undefined;
+
+        if (existingReceipt) {
+          if (existingReceipt.entry_id !== input.entryId) {
+            throw new LibraryValidationError(
+              "idempotencyKey",
+              "idempotencyKey was already used for a different entry.",
+            );
+          }
+          const latest = requireEntryExists(input.entryId);
+          return { entry: latest, deduplicated: true };
+        }
+
+        const current = requireEntryExists(input.entryId);
+        if (
+          input.expectedRevision !== undefined &&
+          current.revision !== validateRevision(input.expectedRevision)
+        ) {
+          throw new LibraryEditConflictError(current.id, input.expectedRevision, current.revision);
+        }
+
+        const mergedNote = normalizeLibraryNote(
+          current.note.trim().length > 0 ? `${current.note.trimEnd()}\n\n${addition}` : addition,
+        );
+        const timestamp = now().toISOString();
+        const nextRevision = current.revision + 1;
+
+        db.prepare(
+          `UPDATE entries
+           SET note = ?, updated_at = ?, revision = ?
+           WHERE id = ?`,
+        ).run(mergedNote, timestamp, nextRevision, current.id);
+
+        const updated: LibraryEntry = {
+          ...current,
+          note: mergedNote,
+          updatedAt: timestamp,
+          revision: nextRevision,
+        };
+
+        db.prepare(
+          `INSERT INTO library_idempotency (key, entry_id, result_json, created_at)
+           VALUES (?, ?, ?, ?)`,
+        ).run(idempotencyKey, current.id, JSON.stringify({ revision: nextRevision }), timestamp);
+
+        return { entry: updated, deduplicated: false };
+      });
+    };
+
     const rebuildSearchIndex = (): void => {
       if (!ftsEnabled) return;
       runInImmediateTransaction(db, () => {
@@ -1057,6 +1706,15 @@ export function openLibraryDatabase(options: OpenLibraryDatabaseOptions): Librar
       updateEntry,
       deleteEntry,
       composeDraft,
+      getReadingState,
+      setReadingPosition,
+      upsertReadingParagraph,
+      upsertReadingQuestion,
+      deleteReadingQuestion,
+      upsertReadingInsight,
+      setReadingPreference,
+      getReadingNotesForMcp,
+      appendNoteIdempotent,
     };
   } catch (error) {
     if (!closed) {

@@ -3070,7 +3070,8 @@
   "b06724d68053638c": "Library item breadcrumb",
   "38185859b6d53b80": "Document reader",
   "1d829f40405b2c18": "Library",
-  "afbda8bcbf15e164": "PDF",
+  "499941d17874d71e": "DeepRead",
+  "addf1ac8dc338e44": "Raw PDF",
   "95ee861f5847de19": "Text & notes",
   "fded17ad621be409": "Library unavailable on this environment",
   "c82dbbdf21bee228": "Connect an environment that supports research library to view this item.",
@@ -6050,6 +6051,362 @@
   "c9cae7bac5f42342": "加载更多",
   "54f59582f641cbaf": "issue",
   "01e7836447bcad93": "分配给我的 issue",
+  "3c7f8c467e376aa3": "Left margin rail",
+  "31b99996b64d7adb": "Right margin rail",
+  "84c69883102c116b": "Mark as muddiest point",
+  "c60f0df7cae2d046": "Paragraph note",
+  "a0ecbf657d9aaddb": "Write your note or takeaway for this paragraph...",
+  "104ed08226a00e2d": "More card actions",
+  "7ab9bbc5048fde94": "Hide translation",
+  "dc82cc5a037629fb": "Show serif translation",
+  "98e467c1afa5cc47": [
+    "Personal note · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "f5b66c481aa3e4df": "编辑",
+  "7883e287a63c35ad": "Save note",
+  "16062ac4bcd9ab9e": "Note",
+  "414d42d99481b463": "Ask",
+  "11f588a27b1f94da": [
+    "Check (p.",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "8d0fe6dab3716cca": "Analyzing...",
+  "6d9f9902948c12d6": "AI read figure",
+  "92761a2d18161d69": "AI analyze",
+  "955e1066f03a3e62": "Unhighlight",
+  "e54705d9e534da7f": "Highlight",
+  "98394673736b5a3c": "Merge prev",
+  "829b25b4c9a467dd": "Hide card",
+  "ca94bdc90f4d9c6e": "DeepRead reading workbench",
+  "f1fa6dd73b7dbed8": "Guide",
+  "a6ce00557bba1401": "Skim & Quiz",
+  "674d67be080d782d": "Notes & wkb",
+  "a80a35888b3af7df": "Ask",
+  "41b9dc65deeb4c82": "Paste DeepRead Guide JSON or Markdown",
+  "8514812dd4173ba6": "Paste DeepRead v1.4.0 Guide JSON or Markdown...",
+  "e1b1fa4a43317f81": "Reading goal",
+  "8e909a552f24b71a": "What do you want to extract from this paper?",
+  "e997032004c55db3": "Your explanation before revealing answer",
+  "e69a6e296f575f8a": "Write your own explanation first...",
+  "a0798402f7de9b71": "Optional wkb target slug",
+  "75b0abdac4d901fc": "Optional wkb note slug (auto-matched if blank)",
+  "f5e524acd88ef25d": "Optional submission summary note",
+  "8a76c8870d76ccc8": "Optional summary note when submitting full entry to wkb brain...",
+  "a8c4938ff85868c6": "Select reading AI model",
+  "cd1ecf414350321f": "Select model",
+  "3bc66a8bf5397708": "Ask a question about this document",
+  "a49685435a3f7a95": "Ask about a proof, experiment, or figure in this document...",
+  "095de3a42812a9e4": "Delete question",
+  "6399b21ed846b3a5": "Target project",
+  "2dbce0f961758873": "Question for T3 main thread",
+  "e7f1aeaeee2de315": "What should the coding agent investigate using this paper?",
+  "c57651f15b21be77": "ima HTTPS base URL",
+  "dfffc26ba4d883be": "https://ima.example.com/api",
+  "add20e3a6a7dc385": "ima knowledge base ID",
+  "22fcbd6ae6cbc653": "Knowledge base ID",
+  "6252506d48a493d5": "ima API key",
+  "fb36a1d70108b54c": "API key stored on server (enter new value to rotate)",
+  "025cffc68f7fc974": "Enter ima API key (stored in server secret store)",
+  "06e4743066c312cc": "Search ima knowledge base",
+  "adb115390b0a0aaf": "Search ima knowledge base...",
+  "1bf5aa42c89e0869": "5-Stage Paper Guide",
+  "f40273376e2374d8": "AI Guide",
+  "e30b840393c5dc4c": "Import",
+  "ecdfedf3fbf8adac": "Import Guide",
+  "7ac027e6c46e15db": "1. Position",
+  "c320458cb2e6e66c": "2. Skeleton",
+  "cacd2cab11d6e301": "No skeleton moves recorded yet.",
+  "d76031aab3b65f6e": "3. Method",
+  "9b78bde4e50ae25b": "4. Evidence",
+  "bbb4914f9419f156": "No evidence chains recorded yet.",
+  "2068655b70ef28ce": "5. Takeaway",
+  "247e7e3e1aba3c92": "Generate a 5-stage DeepRead Guide with AI or import a DeepRead JSON/Markdown guide.",
+  "9c4bd96f2f100ca6": "Reading goal",
+  "0abe8de20f58e301": "5-Section Skim",
+  "5ed8dee5d0dc0a58": "Generate",
+  "7d3c0cbb54d1e3bc": "Problem: ",
+  "cd335b1831e72ee7": "Method: ",
+  "952e427ee1ca829b": "Findings: ",
+  "a20b7914a1fc15e0": "Evidence: ",
+  "ecc7a6e654df2ed4": "Limitations: ",
+  "0126589eff0bcd33": [
+    "p.",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "1bc671db8836dad1": "Generate a concise 5-part overview anchored to physical page numbers.",
+  "922068407990f096": "5-Question Active Recall",
+  "e29309c537ff6e92": "Generate Quiz",
+  "8a518ce1cb39bb06": "Hide reference answer",
+  "98e8164b2120a10a": "Reveal reference answer",
+  "2f1c5ce20fa2dfd1": "Test your understanding by answering in your own words before checking answers.",
+  "92d6214d87d6914d": "Sync to wkb brain",
+  "fd1860bf554d4142": [
+    "Connected (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "298ff7a5cf4e2568": "Unavailable",
+  "d99cc9af56b5256f": [
+    "Sync ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " annotations to wkb brain"
+  ],
+  "20479118c0db3d03": "Submit full paper & notes to wkb brain",
+  "fd0c651d87378ca0": [
+    "Muddiest points (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "6e61943a224aa81e": "No muddiest points marked yet.",
+  "90921dfc2725b39f": [
+    "All paragraph notes (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "eb3f14dcb87c5cb7": "Reading AI model",
+  "6f4f6e7b5a959208": "Direct API",
+  "0635385daf3c9e95": "CLI subscription",
+  "ad0c59c98081b042": "Direct API (no tools, low latency)",
+  "9fba2bb71618c91d": "CLI subscription (isolated empty cwd)",
+  "66dafb9dbea1315c": "Configure a direct API text generator or CLI provider in Settings to enable AI reading.",
+  "a2a594925e6c901c": [
+    "Anchored to ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "4f113bb0bc732b3d": "Clear",
+  "f14bec3e6c18f616": "Ask document",
+  "ee324ce1a58dc2e8": [
+    "Questions (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "31ff372dbad0ef04": [
+    "My note: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "1e7e369d2aad6a19": [
+    "Check p.",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "42a1d2c0da4753f2": "Continue in T3 main thread",
+  "854d4a313cd6e7b7": "Send to T3 main thread",
+  "b854df127d9b0730": "Add a project in this environment to start a T3 main thread with this paper.",
+  "58d74b346b0a0fa9": "DeepRead layout & cards",
+  "97a6da14a10fd3e1": [
+    "Card font size: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "px"
+  ],
+  "be3752c880522264": [
+    "Rail width: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "px"
+  ],
+  "e40087063353230a": "Sentence highlight density",
+  "42f7099de6708491": "Keep expanded: On",
+  "adf6d12eaf92ff87": "Keep expanded: Off",
+  "dd8c136238458eee": [
+    "Restore hidden cards (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "0b5e8179bf1812d4": "ima knowledge base",
+  "f10773575a00d5fa": "Key stored",
+  "0c95910f6f35fd9a": "Not configured",
+  "6c052251ccb48d0a": "Enable ima integration",
+  "32d5505cdc3a9d36": "Save ima settings",
+  "a9f45607bda1899a": "Updating ima settings requires both settings and provider management permissions.",
+  "d05f56d2129e990b": "Search",
+  "503734448a7209e0": "Failed to load PDF document.",
+  "1bffb16785d3a1f6": "Close lookup popover",
+  "e03e5b60f46ff75e": "Close translation popover",
+  "631ad0f8e3ef8951": "Margins-only mode active. Switch back to Full or Highlights to view original pages.",
+  "fbb9234008fc189a": "Original PDF file missing",
+  "6880cf7d42e08229": "Showing extracted text paragraphs with full DeepRead margin cards and AI reading tools.",
+  "2a650f7dc420240a": [
+    "Page ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "38b75b628a9029cb": "Heading",
+  "84c77968e5871bbc": [
+    "Jump to p.",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "e3b24fe84fb17bdd": "Open in Library",
+  "471ecb6c6ae030e4": [
+    "Translation · ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "585e9dc8d6f992f9": "Document sections",
+  "3df9c49976cb55bf": "Sections",
+  "ba42211740cbbe33": "Reading depth",
+  "796f3078e2eada75": "Jump to next key paragraph (N / Shift+N)",
+  "32a3a8a1067f80d6": "Jump to figure or table",
+  "9d3079539e7f021c": "Figures",
+  "882802ea6106beec": "Toggle split or right-only rails",
+  "5526a3a61e4f82cf": "Split left & right rails",
+  "50c961af1187dcde": "Right-only rail",
+  "7264f560d84dbd9e": "Toggle margin rails",
+  "70ff522449c2349b": "Toggle focus mode",
+  "f22baf8636334512": "Toggle reading workbench panel",
+  "3ea562c6651ed722": [
+    "p.",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " / ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    }
+  ],
+  "c50bbb0642841a46": [
+    "Furthest p.",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "64961b0121c852c4": [
+    "~",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " min"
+  ],
+  "c0e9b3205ffeb648": "Full",
+  "8bcb725402f1e39e": "Highlights",
+  "0043b6c9b39dfb90": "Margins only",
+  "c3273b2d14a37aef": "Next key",
+  "237badbcd0998a00": [
+    "Muddiest (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
+  ],
+  "94637b106c0b80b5": "Split rails",
+  "f691f3b88f4f0254": "Right rail",
+  "05082d524daba0a6": "Show rails",
+  "6e514ae9753db8a2": "Hide rails",
+  "43c3384a20089409": "Focus",
+  "47d701306642657e": "Workbench",
+  "bea256eaeac4adf2": "AI reading cancelled",
+  "e202abe68d02bcd4": "Cancelled before completion. Nothing was persisted.",
+  "3c2b6cd4b5180978": "AI reading action failed",
+  "eadac82681e09ede": "Could not complete AI reading action.",
+  "0c93f4496d51b575": "Could not save reading annotation",
+  "835a2d5de13fed86": "Failed to save paragraph note.",
+  "a601910f84d40fca": "Merged continuation paragraph",
+  "8e0ad3c04e4ba04d": "Guide import failed",
+  "4790c5bea17ab814": "Could not parse DeepRead Guide.",
+  "fee43f82db50adbe": "DeepRead Guide imported",
+  "4132603bebbf67fe": "wkb annotation sync failed",
+  "9fe3b4b8e8e9d9b2": "Unable to sync annotations to wkb brain.",
+  "f1655db4cfa0bd9a": "Synced annotations to wkb brain",
+  "4aa89eba013fe06f": "wkb submission failed",
+  "91337980617274be": "Unable to submit entry to wkb brain.",
+  "d51d853178ba1190": "Submitted to wkb brain",
+  "91680a368a22f50f": "Could not update ima settings",
+  "9a0605d1744fc510": "Failed to save ima settings.",
+  "152f49df71f3682a": "ima settings saved",
+  "d1ab1c29691dba22": "ima search failed",
+  "aa566f1ef0e0e422": "Could not query ima knowledge base.",
+  "748800ad9b14d702": "Could not compose T3 thread draft",
+  "139c50c34fe89bbb": "Failed to build library draft context.",
+  "ccf567af0dab98f2": "Synced {count} annotations ({mode}).",
+  "221717af7666fba1": "Analyzing paragraph {label}...",
+  "7ea9bf28f53d109c": "Explaining {figure}...",
+  "4a732f7eb59857dc": "Answering document question...",
+  "095f444b251718f6": "Generating 5-stage DeepRead Guide...",
+  "315ebce68feabd4c": "Generating 5-question active-recall quiz...",
+  "bca1ed28268a79bb": "Generating 5-section skim summary...",
+  "32f1319f065086dd": [
+    "Reading goal: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
   "a7127b5bef49cc70": "Note",
   "bc086ef6d61ffef0": "Web link",
   "bb588971676c6a58": "WeChat article",
@@ -6065,7 +6422,6 @@
   "240a4c07ec92c6db": "Could not import file",
   "9bf54fd73ee440e3": "The server rejected this file.",
   "a7793690f08224ce": "Could not compose draft",
-  "139c50c34fe89bbb": "Failed to build library draft context.",
   "7a43ff8ad7ff59ed": "Paper title, article headline, or note name",
   "61d9f0aa19e7b91b": "https://example.com/article",
   "6bf29d294ad576ff": "Comma-separated tags, e.g. agents, reading",
@@ -6090,7 +6446,6 @@
   "736a53e52a588b40": "All types",
   "3435f41fce86211f": "Filter by tag",
   "d82bec58a07c725b": "Tag…",
-  "6399b21ed846b3a5": "Target project",
   "0df678bb6d954b7f": "Question for draft",
   "f637b63a09f6ce5e": "Ask a question about the selected entries…",
   "e37db98e4c656072": "Select {title}",
@@ -6118,8 +6473,8 @@
       "v": "v"
     }
   ],
+  "afbda8bcbf15e164": "PDF",
   "aba29e77e52bca46": "Delete",
-  "fbb9234008fc189a": "Original PDF file missing",
   "18a5e32503807f87": "The stored PDF file could not be found on disk. Extracted text and personal notes remain editable below.",
   "bd009b22478fc6f1": "Edit conflict detected",
   "b03535af4815a80c": [
@@ -6185,7 +6540,6 @@
   ],
   "c420fd74beb6d0bc": "No projects in this environment",
   "391dace978fc4877": "Open draft",
-  "4f113bb0bc732b3d": "Clear",
   "b19d61b68e3806f0": "No matching library entries",
   "33e34fe783078981": "Save a note, link, or UTF-8 Markdown/text file to start building this environment’s library.",
   "5f25c52b556ad4aa": "Select an entry",
@@ -8571,7 +8925,6 @@
   "0c99fa183ed512e8": "{platform} 在部分环境可用",
   "e6886a7f77b73a8e": "{platform} 不可用",
   "b0b7610d9860d18d": "此机器尚未配置。",
-  "f5b66c481aa3e4df": "编辑",
   "b35256ca61016104": "添加来源",
   "3b20ef0670ae4b0b": "通过 SSH 连接的机器",
   "121ccffacb6b8c6d": "Expo 模拟器",
@@ -12749,7 +13102,6 @@
   "3a87f8c40f3b8065": "Convert",
   "6b2a6542f55188e0": "Workspace exports",
   "2c68be7bc86bec57": "Files generated in ~/Wagent/exports appear here for one-click import into Research Library.",
-  "e30b840393c5dc4c": "Import",
   "0bd950151ddc6407": "不保存就离开？对此文件的更改将丢失。",
   "c0ba3f6756b09f30": "未保存的更改",
   "6914e22d357f0ad6": "已保存并生效",

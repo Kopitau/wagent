@@ -55,3 +55,31 @@ export function useLibraryWkbStatus(environmentId: EnvironmentId | null, enabled
       : null,
   );
 }
+
+export function useLibraryReadingState(
+  environmentId: EnvironmentId | null,
+  entryId: string | null,
+  enabled: boolean,
+) {
+  return useEnvironmentQuery(
+    enabled && environmentId !== null && entryId !== null
+      ? libraryEnvironment.readingState({ environmentId, input: { entryId } })
+      : null,
+  );
+}
+
+export function useLibraryReadingModels(environmentId: EnvironmentId | null, enabled: boolean) {
+  return useEnvironmentQuery(
+    enabled && environmentId !== null
+      ? libraryEnvironment.readingModels({ environmentId, input: undefined })
+      : null,
+  );
+}
+
+export function useLibraryImaStatus(environmentId: EnvironmentId | null, enabled: boolean) {
+  return useEnvironmentQuery(
+    enabled && environmentId !== null
+      ? libraryEnvironment.imaStatus({ environmentId, input: undefined })
+      : null,
+  );
+}
