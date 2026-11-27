@@ -90,6 +90,24 @@ describe("RPC authorization scopes", () => {
     }
   });
 
+  it("maps research library reads to orchestration:read and mutations to orchestration:operate", () => {
+    for (const method of [
+      WS_METHODS.libraryList,
+      WS_METHODS.libraryGet,
+      WS_METHODS.libraryComposeDraft,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.librarySave,
+      WS_METHODS.libraryImportTextFile,
+      WS_METHODS.libraryUpdate,
+      WS_METHODS.libraryDelete,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("lets file readers see a task folder and takes source control to add a repository to it", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.workspaceTaskFolder)).toBe(AuthFilesystemReadScope);
     expect(requiredScopeForRpcMethod(WS_METHODS.workspaceAddTaskFolderRepository)).toBe(
@@ -1027,5 +1045,79 @@ it.effect("requires provider management to send /logout through chat", () =>
       "kept-attachments-edit",
       "manager",
     ]);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("enforces orchestration:read and orchestration:operate on research library RPCs", () =>
+  Effect.gen(function* () {
+    const group = WsRpcGroup.omit(
+      ...[...WsRpcGroup.requests.keys()].filter(
+        (
+          tag,
+        ): tag is Exclude<
+          keyof typeof RPC_REQUIRED_SCOPES,
+          typeof WS_METHODS.libraryList | typeof WS_METHODS.librarySave
+        > => tag !== WS_METHODS.libraryList && tag !== WS_METHODS.librarySave,
+      ),
+    );
+    let saves = 0;
+    const handlers = Layer.merge(
+      group.toLayerHandler(WS_METHODS.libraryList, () =>
+        Effect.succeed({ items: [], total: 0, hasMore: false, searchMode: "browse" as const }),
+      ),
+      group.toLayerHandler(WS_METHODS.librarySave, (input) =>
+        Effect.sync(() => {
+          saves += 1;
+          return {
+            id: "entry-1",
+            kind: input.kind,
+            title: input.title,
+            url: null,
+            body: input.body ?? "",
+            note: input.note ?? "",
+            tags: input.tags ?? [],
+            blobSha256: null,
+            blobBytes: null,
+            pageCount: 0,
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            revision: 1,
+          };
+        }),
+      ),
+    );
+
+    const fsOnly = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthFilesystemReadScope]))),
+    );
+    expect(yield* fsOnly[WS_METHODS.libraryList]({}).pipe(Effect.flip)).toMatchObject({
+      requiredPermission: AuthOrchestrationReadScope,
+    });
+    expect(
+      yield* fsOnly[WS_METHODS.librarySave]({ kind: "note", title: "Blocked" }).pipe(Effect.flip),
+    ).toMatchObject({
+      requiredPermission: AuthOrchestrationOperateScope,
+    });
+
+    const reader = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationReadScope]))),
+    );
+    const listed = yield* reader[WS_METHODS.libraryList]({});
+    expect(listed.total).toBe(0);
+    expect(
+      yield* reader[WS_METHODS.librarySave]({ kind: "note", title: "Blocked" }).pipe(Effect.flip),
+    ).toMatchObject({
+      requiredPermission: AuthOrchestrationOperateScope,
+    });
+    expect(saves).toBe(0);
+
+    const operator = yield* RpcTest.makeClient(group).pipe(
+      Effect.provide(
+        Layer.merge(handlers, RpcAuthorization.layer([AuthOrchestrationOperateScope])),
+      ),
+    );
+    const saved = yield* operator[WS_METHODS.librarySave]({ kind: "note", title: "Allowed" });
+    expect(saved.title).toBe("Allowed");
+    expect(saves).toBe(1);
   }).pipe(Effect.scoped),
 );

@@ -1,4 +1,19 @@
 import {
+  LibraryComposeDraftInput,
+  LibraryComposeDraftResult,
+  LibraryDeleteInput,
+  LibraryDeleteResult,
+  LibraryEntry,
+  LibraryGetInput,
+  LibraryGetResult,
+  LibraryImportTextFileInput,
+  LibraryListInput,
+  LibraryListResult,
+  LibraryRpcError,
+  LibrarySaveInput,
+  LibraryUpdateInput,
+} from "./library.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -723,6 +738,14 @@ export const WS_METHODS = {
   projectCloneCancel: "projectClone.cancel",
   projectCloneRetry: "projectClone.retry",
   subscribeProjectClones: "subscribeProjectClones",
+
+  libraryList: "library.list",
+  libraryGet: "library.get",
+  librarySave: "library.save",
+  libraryImportTextFile: "library.importTextFile",
+  libraryUpdate: "library.update",
+  libraryDelete: "library.delete",
+  libraryComposeDraft: "library.composeDraft",
 
   subscribeVcsStatus: "subscribeVcsStatus",
   subscribeVcsBranch: "subscribeVcsBranch",
@@ -1683,6 +1706,48 @@ const WsProjectsCreateFromThreadRpc = Rpc.make(WS_METHODS.projectsCreateFromThre
   error: Schema.Union([OrchestrationDispatchCommandError, EnvironmentAuthorizationError]),
 });
 
+const WsLibraryListRpc = Rpc.make(WS_METHODS.libraryList, {
+  payload: LibraryListInput,
+  success: LibraryListResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryGetRpc = Rpc.make(WS_METHODS.libraryGet, {
+  payload: LibraryGetInput,
+  success: LibraryGetResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibrarySaveRpc = Rpc.make(WS_METHODS.librarySave, {
+  payload: LibrarySaveInput,
+  success: LibraryEntry,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryImportTextFileRpc = Rpc.make(WS_METHODS.libraryImportTextFile, {
+  payload: LibraryImportTextFileInput,
+  success: LibraryEntry,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryUpdateRpc = Rpc.make(WS_METHODS.libraryUpdate, {
+  payload: LibraryUpdateInput,
+  success: LibraryEntry,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryDeleteRpc = Rpc.make(WS_METHODS.libraryDelete, {
+  payload: LibraryDeleteInput,
+  success: LibraryDeleteResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
+const WsLibraryComposeDraftRpc = Rpc.make(WS_METHODS.libraryComposeDraft, {
+  payload: LibraryComposeDraftInput,
+  success: LibraryComposeDraftResult,
+  error: Schema.Union([LibraryRpcError, EnvironmentAuthorizationError]),
+});
+
 const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -2620,6 +2685,13 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectsCreateFromThreadRpc,
   WsProjectsWriteFileRpc,
   WsProjectsMutateRpc,
+  WsLibraryListRpc,
+  WsLibraryGetRpc,
+  WsLibrarySaveRpc,
+  WsLibraryImportTextFileRpc,
+  WsLibraryUpdateRpc,
+  WsLibraryDeleteRpc,
+  WsLibraryComposeDraftRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsWorkspaceListFoldersRpc,

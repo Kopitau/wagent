@@ -88,6 +88,11 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.workflowsAnswer]: AuthOrchestrationOperateScope,
   [WS_METHODS.workflowsResume]: AuthOrchestrationOperateScope,
   [WS_METHODS.workflowsCancel]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryComposeDraft]: AuthOrchestrationReadScope,
+  [WS_METHODS.librarySave]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryImportTextFile]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryUpdate]: AuthOrchestrationOperateScope,
+  [WS_METHODS.libraryDelete]: AuthOrchestrationOperateScope,
   // The server runs this file: saving it is running code there, as a terminal does.
   [WS_METHODS.workflowsSaveDefinition]: AuthTerminalOperateScope,
   [WS_METHODS.workflowsDeleteDefinition]: AuthTerminalOperateScope,

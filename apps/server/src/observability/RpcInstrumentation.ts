@@ -269,6 +269,13 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
+  [WS_METHODS.libraryList]: "library",
+  [WS_METHODS.libraryGet]: "library",
+  [WS_METHODS.librarySave]: "library",
+  [WS_METHODS.libraryImportTextFile]: "library",
+  [WS_METHODS.libraryUpdate]: "library",
+  [WS_METHODS.libraryDelete]: "library",
+  [WS_METHODS.libraryComposeDraft]: "library",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

@@ -61,6 +61,7 @@ import {
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   ArrowLeftIcon,
+  BookOpenIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
   CheckIcon,
@@ -121,6 +122,7 @@ import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
+import { useAnyLibraryReadable } from "../state/library";
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
@@ -516,6 +518,7 @@ function OpenCommandPaletteDialog(props: {
         : null;
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
   const workflowsReachable = useWorkflowEnvironmentIds().length > 0;
+  const libraryReadable = useAnyLibraryReadable();
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -1761,6 +1764,19 @@ function OpenCommandPaletteDialog(props: {
       icon: <WorkflowIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         await navigate({ to: "/workflows" });
+      },
+    });
+  }
+
+  if (libraryReadable) {
+    actionItems.push({
+      kind: "action",
+      value: "action:library",
+      searchTerms: ["library", "research", "notes", "articles", "papers", "reading", "bookmarks"],
+      title: gt("Open library"),
+      icon: <BookOpenIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({ to: "/library" });
       },
     });
   }

@@ -339,6 +339,10 @@
       "types": "./src/state/issues.ts",
       "default": "./src/state/issues.ts"
     },
+    "./state/library": {
+      "types": "./src/state/library.ts",
+      "default": "./src/state/library.ts"
+    },
     "./state/pull-requests": {
       "types": "./src/state/pullRequests.ts",
       "default": "./src/state/pullRequests.ts"
